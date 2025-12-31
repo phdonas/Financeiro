@@ -49,17 +49,14 @@ const Dashboard: React.FC<DashboardProps> = ({ viewMode, transacoes, orcamentos,
   };
 
   const statsConsolidada = useMemo(() => {
-    // Saldo Líquido (Receitas - Despesas acumuladas de sempre)
     const saldoLedger = transacoes.reduce((acc, t) => {
       if (t.status !== 'PAGO') return acc;
       const val = getVal(t.valor, t.codigo_pais);
       return t.tipo === TipoTransacao.RECEITA ? acc + val : acc - val;
     }, 0);
 
-    // Capital em Investimentos
     const capitalInvestido = investments.reduce((acc, a) => acc + getVal(a.current_value, a.country_code), 0);
 
-    // Gastos Mês Atual
     const gastosMes = transacoes
       .filter(t => {
         const d = new Date(t.data_prevista_pagamento + 'T12:00:00');
@@ -86,7 +83,6 @@ const Dashboard: React.FC<DashboardProps> = ({ viewMode, transacoes, orcamentos,
 
   return (
     <div className="p-6 space-y-6 animate-in fade-in duration-700 pb-24">
-      {/* Header Patrimonial Fase 5 */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
          <div className="md:col-span-2 bg-bb-blue p-8 rounded-[2rem] shadow-xl relative overflow-hidden group border border-blue-400/20">
             <div className="absolute top-0 right-0 w-48 h-48 bg-white/5 rounded-full -mr-16 -mt-16 blur-3xl group-hover:scale-150 transition-transform duration-1000"></div>
@@ -108,12 +104,12 @@ const Dashboard: React.FC<DashboardProps> = ({ viewMode, transacoes, orcamentos,
             </div>
          </div>
          <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-gray-100 flex flex-col justify-between">
-            <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest italic">Câmbio de Auditoria</p>
+            <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest italic">Câmbio Live (EUR/BRL)</p>
             <div className="flex items-end justify-between">
                <span className="text-xl font-black text-bb-blue italic">R$ {exchangeRate.toFixed(2)}</span>
-               <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-tighter">Live API</span>
+               <span className="text-[8px] font-bold text-emerald-500 uppercase tracking-tighter">AwesomeAPI</span>
             </div>
-            <div className="mt-2 text-[8px] text-gray-300 font-bold uppercase italic">Euro vs Real</div>
+            <div className="mt-2 text-[8px] text-gray-300 font-bold uppercase italic tracking-widest">Atualizado agora</div>
          </div>
       </div>
 
@@ -183,8 +179,6 @@ const Dashboard: React.FC<DashboardProps> = ({ viewMode, transacoes, orcamentos,
            </div>
         </div>
       )}
-
-      {/* Outras análises mantêm o padrão das fases anteriores... */}
     </div>
   );
 };

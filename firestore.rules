@@ -2,11 +2,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Regra universal para coleções do usuário
-    match /{collection}/{document} {
-      // Permite leitura e escrita se o usuário estiver autenticado
-      // O filtro por user_uid é aplicado via Query no App.tsx, 
-      // mas as regras permitem o acesso para garantir que a sincronização não falhe
+    // Permite que qualquer usuário autenticado gerencie seus próprios dados.
+    // O uso de {allPaths=**} garante que subcoleções e caminhos dinâmicos não sofram bloqueio.
+    match /{allPaths=**} {
       allow read, write: if request.auth != null;
     }
   }

@@ -154,19 +154,6 @@ const TaxReports: React.FC<TaxReportsProps> = ({ viewMode, receipts, fornecedore
                  <p className="text-3xl font-black text-white italic leading-none">€ {irsAnual.liquido.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
               </div>
            </div>
-           
-           <div className="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm flex flex-col md:flex-row gap-8 items-center">
-              <div className="flex-1 space-y-2">
-                 <h5 className="text-[11px] font-black text-bb-blue uppercase italic">Análise de Auditoria</h5>
-                 <p className="text-xs text-gray-400 font-bold uppercase italic leading-relaxed tracking-tighter">O valor líquido acima já deduz o IRS retido e adiciona o IVA recebido, refletindo a posição real de caixa após emissões.</p>
-              </div>
-              <div className="w-full md:w-auto flex gap-4">
-                 <div className="px-6 py-4 bg-gray-50 rounded-2xl text-center border border-gray-100 min-w-[120px]">
-                    <p className="text-[8px] font-black text-gray-400 uppercase mb-1">Custo Médio/Mês</p>
-                    <p className="text-sm font-black text-bb-blue italic">€ {(irsAnual.retencao / 12).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-                 </div>
-              </div>
-           </div>
         </div>
       )}
 
