@@ -104,7 +104,7 @@ export interface Receipt {
   description: string;
   is_paid: boolean;
   flag_calcula_premiacao: boolean;
-  document_url?: string; // Novo campo Fase 3
+  document_url?: string;
 }
 
 export interface InssRecord {

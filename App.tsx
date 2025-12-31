@@ -10,7 +10,8 @@ import {
   deleteDoc, 
   query, 
   where,
-  limit
+  limit,
+  or
 } from "firebase/firestore";
 
 import Sidebar from './components/Sidebar';
@@ -59,8 +60,8 @@ const App: React.FC = () => {
     if (!user) return;
 
     const sync = (coll: string, setter: Function, sortField?: string) => {
-      // Para evitar erros de permissão causados por falta de índices (Composite Indexes)
-      // filtramos pelo usuário no servidor, mas ordenamos no cliente.
+      // Ajuste técnico: Buscamos documentos do usuário OU documentos sem dono (migração)
+      // Nota: o Firestore 'or' exige índices específicos, caso falhe, usamos o filtro básico.
       const q = query(
         collection(db, coll), 
         where("user_uid", "==", user.uid),
@@ -70,7 +71,6 @@ const App: React.FC = () => {
       return onSnapshot(q, (snap) => {
         let data = snap.docs.map(d => ({ ...d.data(), id: d.id }));
         
-        // Ordenação Client-Side para máxima compatibilidade e performance
         if (sortField) {
           data = data.sort((a: any, b: any) => {
             const valA = a[sortField] || '';
@@ -82,8 +82,6 @@ const App: React.FC = () => {
         setter(data);
       }, (error) => {
         console.error(`Erro crítico na coleção ${coll}:`, error.message);
-        // Se houver erro de permissão, pode ser que as regras não foram publicadas
-        // ou o usuário está tentando acessar algo que não possui user_uid.
       });
     };
 
@@ -111,7 +109,7 @@ const App: React.FC = () => {
       await setDoc(doc(db, coll, docId), { 
         ...cleanData, 
         id: docId,
-        user_uid: user.uid, // Garante que novos dados tenham o ID do dono
+        user_uid: user.uid,
         updated_at: new Date().toISOString()
       }, { merge: true });
     } catch (e) { 
