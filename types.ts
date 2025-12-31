@@ -72,10 +72,13 @@ export interface Transacao {
   origem: 'IMPORTACAO' | 'MANUAL';
   recorrencia?: ConfigRecorrencia;
   receipt_id?: string;
-  // Campos Habitação PT
+  // Campos Habitação PT (Restaurados Fase 2)
   parcela_atual?: number;
   total_parcelas?: number;
   saldo_devedor_restante?: number;
+  juros_pagos?: number;
+  capital_amortizado?: number;
+  data_revisao_taxa?: string;
 }
 
 export interface Receipt {

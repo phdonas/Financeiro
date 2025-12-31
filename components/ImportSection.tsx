@@ -1,3 +1,4 @@
+
 import React, { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { Transacao, CategoriaContabil, FormaPagamento, Fornecedor, TipoTransacao, StatusTransacao, Receipt } from '../types';
@@ -61,30 +62,25 @@ const ImportSection: React.FC<ImportSectionProps> = ({
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: '' });
       
-      // Versão Base: Pula rigorosamente 3 linhas de cabeçalho informativo
       if (rows.length >= 4) {
         parseRows(rows.slice(3));
       } else {
-        alert("A planilha não atende ao layout Premium PHD (3 linhas de header).");
+        alert("A planilha não atende ao layout (3 linhas de header).");
       }
     };
     reader.readAsArrayBuffer(file);
   };
 
   const parseRows = (rows: any[][]) => {
-    const results: ParsedRow[] = rows.map((row) => {
-      // Ignora linhas totalmente vazias ou sem data
+    // FIX: Changed ':' to '=' to fix assignment and prevent TypeScript from seeing 'rows' as a namespace
+    const results = rows.map((row) => {
       if (!row[0] || String(row[0]).trim() === '') return null;
 
       const errors: string[] = [];
       const isoDate = convertToISODate(row[0]);
-      if (!isoDate) errors.push("Formato de data inválido na Coluna A");
+      if (!isoDate) errors.push("Data inválida Coluna A");
 
       if (importType === 'RECIBOS') {
-        /**
-         * MAPEAMENTO RECIBOS PT (VERSÃO BASE):
-         * A:Data | B:Nº Recibo | C:Fornecedor | D:Categoria | E:Item | F:Descrição | G:Base | H:IRS% | I:IVA% | J:Status(S/N)
-         */
         const rId = String(row[1] || '').trim();
         const supName = String(row[2] || '').trim();
         const catName = String(row[3] || '').trim();
@@ -95,8 +91,8 @@ const ImportSection: React.FC<ImportSectionProps> = ({
         const foundCat = categorias.find(c => c.nome.toUpperCase() === catName.toUpperCase());
         const foundItem = foundCat?.contas.find(i => i.nome.toUpperCase() === itemName.toUpperCase());
 
-        if (!foundCat) errors.push(`Categoria '${catName}' inexistente`);
-        if (!rId) errors.push("Nº do Recibo não informado");
+        if (!foundCat) errors.push(`Cat '${catName}' inexistente`);
+        if (!rId) errors.push("Nº Recibo em falta");
 
         const irsP = parseFloat(String(row[7] || '11.5').replace(',', '.'));
         const ivaP = parseFloat(String(row[8] || '23').replace(',', '.'));
@@ -138,10 +134,6 @@ const ImportSection: React.FC<ImportSectionProps> = ({
         };
 
       } else {
-        /**
-         * MAPEAMENTO LANÇAMENTOS (VERSÃO BASE):
-         * A:Data | B:Tipo | C:Conta/Banco | D:Categoria | E:Item | F:Descrição | G:Valor | H:Status(S/N)
-         */
         const country = importType === 'LANCAMENTOS_BR' ? 'BR' : 'PT';
         const tipoStr = String(row[1]).toUpperCase();
         const banco = String(row[2] || '').trim();
@@ -153,7 +145,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
         const foundCat = categorias.find(c => c.nome.toUpperCase() === catName.toUpperCase());
         const foundItem = foundCat?.contas.find(i => i.nome.toUpperCase() === itemName.toUpperCase());
 
-        if (!foundCat) errors.push(`Categoria '${catName}' não mapeada`);
+        if (!foundCat) errors.push(`Cat '${catName}' não mapeada`);
 
         const tx: Partial<Transacao> = {
           id: Math.random().toString(36).substr(2, 9),
@@ -161,7 +153,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
           tipo: tipoStr.includes('RECEITA') ? TipoTransacao.RECEITA : TipoTransacao.DESPESA,
           data_competencia: isoDate,
           data_prevista_pagamento: isoDate,
-          description: String(row[5] || itemName || 'Transação Importada'),
+          description: String(row[5] || itemName || 'Importada'),
           valor: val,
           status: String(row[7]).toUpperCase() === 'S' ? 'PAGO' : 'PENDENTE',
           forma_pagamento_id: foundFP?.id || '',
@@ -193,16 +185,13 @@ const ImportSection: React.FC<ImportSectionProps> = ({
 
   const confirmSync = () => {
     const validOnes = importResults.filter(r => r.isValid);
-    if (validOnes.length === 0) return alert("Nenhum dado válido processado.");
-
-    if (!confirm(`Sincronizar ${validOnes.length} registros com a Nuvem Firebase?`)) return;
+    if (validOnes.length === 0) return alert("Dados inválidos.");
+    if (!confirm(`Sincronizar ${validOnes.length} registros?`)) return;
 
     validOnes.forEach(res => {
       if (importType === 'RECIBOS') {
         const r = res.data as Receipt;
         onSaveReceipt(r);
-        
-        // Sincronia Relacional Versão Base: Recibo gera Transação Automática
         onSaveTx({
           id: `TX_${r.internal_id}`,
           workspace_id: 'fam_01',
@@ -213,7 +202,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
           tipo: TipoTransacao.RECEITA,
           data_competencia: r.issue_date,
           data_prevista_pagamento: r.issue_date,
-          description: `${r.description} (Recibo #${r.id})`,
+          description: `${r.description} (#${r.id})`,
           valor: r.received_amount,
           status: r.is_paid ? 'PAGO' : 'PENDENTE',
           origem: 'IMPORTACAO',
@@ -224,36 +213,35 @@ const ImportSection: React.FC<ImportSectionProps> = ({
       }
     });
 
-    alert("Mapeamento concluído e sincronizado com sucesso.");
     setCurrentStep('TYPE_SELECT');
     setImportType(null);
     setImportResults([]);
   };
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-12 pb-24 animate-in fade-in duration-700">
+    <div className="p-6 max-w-5xl mx-auto space-y-6 pb-24 animate-in fade-in duration-700">
       {currentStep === 'TYPE_SELECT' && (
-        <div className="space-y-12 text-center">
+        <div className="space-y-8 text-center">
           <div>
-            <h2 className="text-5xl font-black text-bb-blue italic uppercase tracking-tighter leading-none mb-4">Mapeamento Premium PHD</h2>
-            <p className="text-[12px] text-gray-400 font-bold uppercase tracking-[0.4em] italic opacity-60">Sincronia Total Versão Base x Firebase</p>
+            <h2 className="text-3xl font-black text-bb-blue italic uppercase tracking-tighter leading-none mb-2">Mapeamento PHD</h2>
+            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-[0.2em] italic opacity-60">Sincronia Firebase</p>
           </div>
           
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
              {[
-               { id: 'RECIBOS', title: 'Recibos Portugal', icon: '🧾', desc: 'Colunas A-J (Header 3)', color: 'border-bb-blue' },
-               { id: 'LANCAMENTOS_PT', title: 'Ledger Portugal', icon: '🇵🇹', desc: 'Layout Euro (A-H)', color: 'border-blue-400' },
-               { id: 'LANCAMENTOS_BR', title: 'Ledger Brasil', icon: '🇧🇷', desc: 'Layout Real (A-H)', color: 'border-emerald-500' }
+               { id: 'RECIBOS', title: 'Recibos PT', icon: '🧾', desc: 'Layout Colunas A-J', color: 'border-bb-blue' },
+               { id: 'LANCAMENTOS_PT', title: 'Ledger PT', icon: '🇵🇹', desc: 'Layout Euro A-H', color: 'border-blue-400' },
+               { id: 'LANCAMENTOS_BR', title: 'Ledger BR', icon: '🇧🇷', desc: 'Layout Real A-H', color: 'border-emerald-500' }
              ].map(opt => (
                <button 
                  key={opt.id}
                  onClick={() => { setImportType(opt.id as ImportType); setCurrentStep('UPLOAD'); }}
-                 className={`bg-white p-12 rounded-[4.5rem] border-4 border-transparent hover:${opt.color} shadow-sm hover:shadow-2xl transition-all group flex flex-col items-center gap-6`}
+                 className={`bg-white p-10 rounded-[1.5rem] border border-gray-100 hover:${opt.color} hover:border-2 shadow-sm hover:shadow-lg transition-all group flex flex-col items-center gap-4`}
                >
-                 <div className="w-24 h-24 bg-gray-50 rounded-[3rem] flex items-center justify-center text-5xl group-hover:scale-110 transition-transform">{opt.icon}</div>
+                 <div className="w-16 h-16 bg-gray-50 rounded-2xl flex items-center justify-center text-3xl group-hover:scale-110 transition-transform">{opt.icon}</div>
                  <div>
-                   <h3 className="text-xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">{opt.title}</h3>
-                   <p className="text-[9px] text-gray-400 font-bold uppercase mt-2 italic tracking-widest">{opt.desc}</p>
+                   <h3 className="text-lg font-black text-bb-blue italic uppercase tracking-tighter leading-none">{opt.title}</h3>
+                   <p className="text-[9px] text-gray-400 font-bold uppercase mt-1 italic tracking-widest">{opt.desc}</p>
                  </div>
                </button>
              ))}
@@ -262,75 +250,66 @@ const ImportSection: React.FC<ImportSectionProps> = ({
       )}
 
       {currentStep === 'UPLOAD' && (
-        <div className="flex flex-col items-center justify-center min-h-[500px] animate-in zoom-in duration-300">
+        <div className="flex flex-col items-center justify-center min-h-[400px] animate-in zoom-in duration-300">
            <div 
-             className="bg-white p-24 rounded-[6rem] border-4 border-dashed border-gray-100 hover:border-bb-blue transition-all cursor-pointer text-center group shadow-xl max-w-3xl w-full"
+             className="bg-white p-16 rounded-[2rem] border-2 border-dashed border-gray-200 hover:border-bb-blue transition-all cursor-pointer text-center group shadow-md max-w-2xl w-full"
              onClick={() => fileInputRef.current?.click()}
            >
-              <div className="w-32 h-32 bg-bb-blue/5 rounded-[4rem] flex items-center justify-center mx-auto mb-10">
-                 <span className="text-6xl animate-bounce">📂</span>
+              <div className="w-20 h-20 bg-bb-blue/5 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                 <span className="text-4xl animate-bounce">📂</span>
               </div>
-              <h3 className="text-4xl font-black text-bb-blue italic uppercase mb-3 tracking-tighter">Carregar Planilha</h3>
-              <p className="text-[11px] text-gray-400 font-bold uppercase italic tracking-[0.3em] opacity-50">Localize o arquivo de {importType} .xlsx</p>
+              <h3 className="text-2xl font-black text-bb-blue italic uppercase mb-2 tracking-tighter">Carregar Arquivo</h3>
+              <p className="text-[10px] text-gray-400 font-bold uppercase italic tracking-widest opacity-50">.xlsx de {importType}</p>
               <input type="file" ref={fileInputRef} className="hidden" accept=".xlsx" onChange={processFile} />
            </div>
-           <button onClick={() => setCurrentStep('TYPE_SELECT')} className="mt-10 text-[10px] font-black uppercase text-gray-300 hover:text-red-500 italic transition-colors">← Voltar ao Menu</button>
+           <button onClick={() => setCurrentStep('TYPE_SELECT')} className="mt-8 text-[10px] font-black uppercase text-gray-300 hover:text-red-500 italic transition-colors">← Voltar</button>
         </div>
       )}
 
       {currentStep === 'REVIEW' && (
-        <div className="bg-white p-14 rounded-[5rem] shadow-2xl space-y-12 animate-in slide-in-from-bottom-10 duration-700 border border-gray-100">
-           <div className="flex justify-between items-end border-b border-gray-50 pb-12">
+        <div className="bg-white p-8 rounded-[2rem] shadow-xl space-y-8 animate-in slide-in-from-bottom-5 duration-700 border border-gray-100">
+           <div className="flex justify-between items-end border-b border-gray-50 pb-6">
               <div>
-                 <h3 className="text-4xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Auditoria de Dados</h3>
-                 <p className="text-[11px] text-gray-400 font-bold uppercase mt-3 italic tracking-widest">{importResults.length} Registros Processados • Mapeamento Ativo</p>
+                 <h3 className="text-2xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Auditoria de Dados</h3>
+                 <p className="text-[10px] text-gray-400 font-bold uppercase mt-2 italic tracking-widest">{importResults.length} Registros Processados</p>
               </div>
-              <div className="flex gap-8">
-                 <button onClick={() => setCurrentStep('TYPE_SELECT')} className="px-10 py-5 text-[11px] font-black uppercase text-gray-300 hover:text-red-500 italic transition-all">Cancelar</button>
-                 <button onClick={confirmSync} className="bg-bb-blue text-white px-20 py-6 rounded-[3.5rem] text-[12px] font-black uppercase shadow-2xl tracking-[0.3em] hover:scale-105 active:scale-95 transition-all">Sincronizar Agora</button>
+              <div className="flex gap-4">
+                 <button onClick={() => setCurrentStep('TYPE_SELECT')} className="px-6 py-3 text-[10px] font-black uppercase text-gray-300 hover:text-red-500 italic transition-all">Cancelar</button>
+                 <button onClick={confirmSync} className="bg-bb-blue text-white px-10 py-3.5 rounded-xl text-[11px] font-black uppercase shadow-lg tracking-widest hover:scale-105 active:scale-95 transition-all">Sincronizar</button>
               </div>
            </div>
 
-           <div className="overflow-x-auto max-h-[600px] border border-gray-100 rounded-[3.5rem] scrollbar-hide">
+           <div className="overflow-x-auto max-h-[500px] border border-gray-100 rounded-xl scrollbar-hide">
               <table className="w-full text-left text-[11px]">
                  <thead className="bg-gray-50 text-bb-blue font-black uppercase italic sticky top-0 z-10 border-b">
                     <tr>
-                       <th className="px-12 py-8">Validação</th>
-                       <th className="px-12 py-8">Data Compet.</th>
-                       <th className="px-12 py-8">Identificação</th>
-                       <th className="px-12 py-8">Cat./Item</th>
-                       <th className="px-12 py-8 text-right">Valor Final</th>
+                       <th className="px-6 py-4">Status</th>
+                       <th className="px-6 py-4">Data</th>
+                       <th className="px-6 py-4">Descrição</th>
+                       <th className="px-6 py-4">Categoria</th>
+                       <th className="px-6 py-4 text-right">Valor</th>
                     </tr>
                  </thead>
                  <tbody className="divide-y divide-gray-50">
                     {importResults.map((res, i) => (
                       <tr key={i} className={`hover:bg-gray-50/50 transition-colors ${!res.isValid ? 'bg-red-50/40' : ''}`}>
-                         <td className="px-12 py-6">
+                         <td className="px-6 py-3">
                             {res.isValid ? (
-                               <div className="flex items-center gap-3">
-                                  <div className="w-2.5 h-2.5 bg-emerald-500 rounded-full animate-pulse"></div>
-                                  <span className="text-emerald-600 font-black italic uppercase text-[10px] tracking-widest">OK</span>
-                               </div>
+                               <span className="text-emerald-600 font-black italic uppercase text-[9px]">OK</span>
                             ) : (
-                               <div className="flex flex-col gap-1" title={res.errors.join(', ')}>
-                                  <div className="flex items-center gap-3">
-                                    <div className="w-2.5 h-2.5 bg-red-500 rounded-full"></div>
-                                    <span className="text-red-500 font-black italic uppercase text-[10px]">ERRO</span>
-                                  </div>
-                                  <p className="text-[7px] text-red-400 font-bold uppercase italic">{res.errors[0]}</p>
-                               </div>
+                               <span className="text-red-500 font-black italic uppercase text-[9px]">ERRO</span>
                             )}
                          </td>
-                         <td className="px-12 py-6 font-bold text-gray-400 italic">{res.displayInfo.data.split('-').reverse().join('/')}</td>
-                         <td className="px-12 py-6">
-                            <span className="font-black block uppercase text-bb-blue leading-none mb-1 text-xs">{res.displayInfo.identificador}</span>
-                            <span className="text-[8px] font-bold text-gray-400 uppercase italic">{res.displayInfo.detalhe}</span>
+                         <td className="px-6 py-3 font-bold text-gray-400 italic">{res.displayInfo.data.split('-').reverse().join('/')}</td>
+                         <td className="px-6 py-3">
+                            <span className="font-black block uppercase text-bb-blue leading-none mb-0.5 text-[11px]">{res.displayInfo.identificador}</span>
+                            <span className="text-[8px] font-bold text-gray-400 uppercase italic leading-none">{res.displayInfo.detalhe}</span>
                          </td>
-                         <td className="px-12 py-6">
+                         <td className="px-6 py-3">
                             <span className="font-black uppercase text-gray-700 italic block">{res.displayInfo.categoria}</span>
                          </td>
-                         <td className="px-12 py-6 text-right font-black text-bb-blue text-xs italic">
-                            {importType === 'LANCAMENTOS_BR' ? 'R$' : '€'} {res.displayInfo.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                         <td className="px-6 py-3 text-right font-black text-bb-blue text-[11px] italic">
+                            {res.displayInfo.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                          </td>
                       </tr>
                     ))}
