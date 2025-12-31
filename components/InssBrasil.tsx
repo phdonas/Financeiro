@@ -25,7 +25,6 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
   const stats = useMemo(() => {
     const pauloRecs = records.filter(r => r.quem === 'Paulo');
     const deboraRecs = records.filter(r => r.quem === 'Débora');
-    // Fix: Providing a complete fallback object to avoid property 'nit' and 'data_aposentadoria' missing errors
     const config = configs.find(c => c.ano === 2025) || configs[0] || { 
       paulo: { total_parcelas: 0, nit: '', data_aposentadoria: '' }, 
       debora: { total_parcelas: 0, nit: '', data_aposentadoria: '' } 
@@ -33,15 +32,15 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
 
     return {
       paulo: {
-        total: config.paulo?.total_parcelas || 0,
+        total: config.paulo?.total_parcelas || 1,
         pagas: pauloRecs.filter(r => r.status === 'PAGO').length,
-        nit: config.paulo?.nit || '---',
+        nit: config.paulo?.nit || 'N/A',
         aposentadoria: config.paulo?.data_aposentadoria || ''
       },
       debora: {
-        total: config.debora?.total_parcelas || 0,
+        total: config.debora?.total_parcelas || 1,
         pagas: deboraRecs.filter(r => r.status === 'PAGO').length,
-        nit: config.debora?.nit || '---',
+        nit: config.debora?.nit || 'N/A',
         aposentadoria: config.debora?.data_aposentadoria || ''
       }
     };
@@ -78,100 +77,151 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
   };
 
   return (
-    <div className="p-8 space-y-8 pb-24">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="bg-white p-8 rounded-[3rem] border-l-8 border-bb-blue shadow-xl space-y-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <h3 className="text-xl font-black text-bb-blue italic uppercase tracking-tighter">PAULO</h3>
-              <p className="text-[10px] text-gray-400 font-bold uppercase">NIT: {stats.paulo.nit}</p>
-            </div>
-            <div className="text-right">
-              <span className="text-2xl font-black text-bb-blue italic">{stats.paulo.pagas}/{stats.paulo.total}</span>
-              <p className="text-[9px] text-gray-300 font-bold uppercase tracking-widest">Pagas</p>
-            </div>
-          </div>
-          <div className="w-full bg-gray-100 h-4 rounded-full overflow-hidden">
-            <div className="bg-bb-blue h-full transition-all duration-1000" style={{ width: `${stats.paulo.total > 0 ? (stats.paulo.pagas / stats.paulo.total) * 100 : 0}%` }}></div>
-          </div>
-          <p className="text-[9px] font-black text-bb-blue uppercase italic">Previsão: {stats.paulo.aposentadoria ? new Date(stats.paulo.aposentadoria).toLocaleDateString('pt-BR') : '---'}</p>
+    <div className="p-6 space-y-8 pb-24 animate-in fade-in duration-700">
+      {/* Cards de Progresso Auditoria */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <div className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm relative overflow-hidden group">
+           <div className="absolute top-0 right-0 p-8 opacity-5 text-6xl group-hover:scale-110 transition-transform">🇧🇷</div>
+           <div className="flex justify-between items-start mb-6">
+              <div>
+                 <h3 className="text-2xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Paulo S.</h3>
+                 <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-2 italic">NIT: {stats.paulo.nit}</p>
+              </div>
+              <div className="text-right">
+                 <p className="text-[10px] font-black text-bb-blue uppercase tracking-widest mb-1 italic">Vínculo Previdenciário</p>
+                 <span className="text-3xl font-black text-bb-blue italic tracking-tighter">{stats.paulo.pagas} / {stats.paulo.total}</span>
+              </div>
+           </div>
+           
+           <div className="space-y-4">
+              <div className="w-full h-3 bg-gray-50 rounded-full overflow-hidden shadow-inner border border-gray-100">
+                 <div className="h-full bg-bb-blue rounded-full transition-all duration-1000 shadow-[0_0_10px_rgba(0,56,168,0.3)]" style={{ width: `${(stats.paulo.pagas / stats.paulo.total) * 100}%` }}></div>
+              </div>
+              <div className="flex justify-between items-center bg-blue-50/50 p-4 rounded-2xl border border-blue-100">
+                 <span className="text-[9px] font-black text-bb-blue uppercase italic">Previsão Aposentadoria</span>
+                 <span className="text-[11px] font-black text-bb-blue italic">{stats.paulo.aposentadoria ? new Date(stats.paulo.aposentadoria).toLocaleDateString('pt-BR') : 'Aguardando Cálculo'}</span>
+              </div>
+           </div>
         </div>
 
-        <div className="bg-white p-8 rounded-[3rem] border-l-8 border-bb-yellow shadow-xl space-y-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <h3 className="text-xl font-black text-bb-blue italic uppercase tracking-tighter">DÉBORA</h3>
-              <p className="text-[10px] text-gray-400 font-bold uppercase">NIT: {stats.debora.nit}</p>
-            </div>
-            <div className="text-right">
-              <span className="text-2xl font-black text-bb-blue italic">{stats.debora.pagas}/{stats.debora.total}</span>
-              <p className="text-[9px] text-gray-300 font-bold uppercase tracking-widest">Pagas</p>
-            </div>
-          </div>
-          <div className="w-full bg-gray-100 h-4 rounded-full overflow-hidden">
-            <div className="bg-bb-yellow h-full transition-all duration-1000" style={{ width: `${stats.debora.total > 0 ? (stats.debora.pagas / stats.debora.total) * 100 : 0}%` }}></div>
-          </div>
-          <p className="text-[9px] font-black text-bb-blue uppercase italic">Previsão: {stats.debora.aposentadoria ? new Date(stats.debora.aposentadoria).toLocaleDateString('pt-BR') : '---'}</p>
+        <div className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm relative overflow-hidden group">
+           <div className="absolute top-0 right-0 p-8 opacity-5 text-6xl group-hover:scale-110 transition-transform">🇧🇷</div>
+           <div className="flex justify-between items-start mb-6">
+              <div>
+                 <h3 className="text-2xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Débora S.</h3>
+                 <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest mt-2 italic">NIT: {stats.debora.nit}</p>
+              </div>
+              <div className="text-right">
+                 <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1 italic">Vínculo Previdenciário</p>
+                 <span className="text-3xl font-black text-emerald-600 italic tracking-tighter">{stats.debora.pagas} / {stats.debora.total}</span>
+              </div>
+           </div>
+           
+           <div className="space-y-4">
+              <div className="w-full h-3 bg-gray-50 rounded-full overflow-hidden shadow-inner border border-gray-100">
+                 <div className="h-full bg-emerald-600 rounded-full transition-all duration-1000 shadow-[0_0_10px_rgba(16,185,129,0.3)]" style={{ width: `${(stats.debora.pagas / stats.debora.total) * 100}%` }}></div>
+              </div>
+              <div className="flex justify-between items-center bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100">
+                 <span className="text-[9px] font-black text-emerald-600 uppercase italic">Previsão Aposentadoria</span>
+                 <span className="text-[11px] font-black text-emerald-600 italic">{stats.debora.aposentadoria ? new Date(stats.debora.aposentadoria).toLocaleDateString('pt-BR') : 'Aguardando Cálculo'}</span>
+              </div>
+           </div>
         </div>
       </div>
 
-      <div className="bg-white p-8 rounded-[3rem] shadow-sm border border-gray-100 space-y-6">
-        <div className="flex justify-between items-center">
-          <h4 className="text-sm font-black text-bb-blue uppercase italic tracking-widest">Lançamentos na Nuvem</h4>
-          <button onClick={() => { setEditingId(null); setFormData(initialForm); setIsModalOpen(true); }} className="bg-bb-blue text-white px-8 py-3 rounded-2xl text-[10px] font-black uppercase shadow-xl hover:scale-105 transition-transform">🗓️ Lançar Parcela</button>
+      <div className="bg-white rounded-[2rem] shadow-sm border border-gray-100 overflow-hidden">
+        <div className="p-8 border-b border-gray-50 flex flex-wrap justify-between items-center gap-4">
+           <div>
+              <h4 className="text-xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Mapa de Contribuições</h4>
+              <p className="text-[10px] text-gray-400 font-bold uppercase mt-1 italic tracking-widest">Auditoria de Parcelas GPS/NIT</p>
+           </div>
+           <button onClick={() => { setEditingId(null); setFormData(initialForm); setIsModalOpen(true); }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-lg hover:scale-105 active:scale-95 transition-all">📅 Lançar Guia GPS</button>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-[11px]">
-            <thead className="bg-gray-50 text-bb-blue font-black uppercase italic">
+            <thead className="bg-gray-50 text-bb-blue uppercase font-black italic border-b border-gray-100">
               <tr>
-                <th className="px-6 py-4">Parcela</th>
-                <th className="px-6 py-4">Quem</th>
-                <th className="px-6 py-4">Vencimento</th>
-                <th className="px-6 py-4 text-right">Valor</th>
-                <th className="px-6 py-4 text-center">Status</th>
-                <th className="px-6 py-4 text-center">Ações</th>
+                <th className="px-8 py-5">Parcela</th>
+                <th className="px-8 py-5">Contribuinte</th>
+                <th className="px-8 py-5">Competência</th>
+                <th className="px-8 py-5 text-right">Valor Guia</th>
+                <th className="px-8 py-5 text-center">Status Auditoria</th>
+                <th className="px-8 py-5 text-center">Ações</th>
               </tr>
             </thead>
-            <tbody className="divide-y">
-              {records.map(rec => (
-                <tr key={rec.id} className="hover:bg-gray-50/50 group">
-                  <td className="px-6 py-4 font-black">#{rec.numero_parcela.toString().padStart(2, '0')}</td>
-                  <td className="px-6 py-4 font-bold uppercase">{rec.quem}</td>
-                  <td className="px-6 py-4 text-gray-400">{new Date(rec.vencimento + "T12:00:00").toLocaleDateString('pt-BR')}</td>
-                  <td className="px-6 py-4 text-right font-black text-bb-blue">R$ {rec.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
-                  <td className="px-6 py-4 text-center">
-                    <span className={`px-3 py-1 rounded-full text-[8px] font-black uppercase ${rec.status === 'PAGO' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-600'}`}>{rec.status}</span>
-                  </td>
-                  <td className="px-6 py-4 text-center">
-                    <div className="flex gap-2 justify-center opacity-0 group-hover:opacity-100">
-                      <button onClick={() => { setEditingId(rec.id); setFormData(rec); setIsModalOpen(true); }} className="text-bb-blue font-black uppercase text-[8px]">Edit</button>
-                      <button onClick={() => onDelete(rec.id)} className="text-red-500 font-black uppercase text-[8px]">Del</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+            <tbody className="divide-y divide-gray-50">
+              {records.length === 0 ? (
+                <tr><td colSpan={6} className="py-20 text-center text-gray-300 font-black uppercase italic opacity-30">Sem registros sincronizados com a nuvem</td></tr>
+              ) : (
+                records.sort((a,b) => b.competencia.localeCompare(a.competencia)).map(rec => (
+                  <tr key={rec.id} className="hover:bg-gray-50 transition-colors group">
+                    <td className="px-8 py-4 font-black text-gray-400">#{rec.numero_parcela.toString().padStart(3, '0')}</td>
+                    <td className="px-8 py-4">
+                       <span className={`px-3 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest ${rec.quem === 'Paulo' ? 'bg-blue-50 text-bb-blue' : 'bg-emerald-50 text-emerald-600'}`}>{rec.quem}</span>
+                    </td>
+                    <td className="px-8 py-4">
+                       <p className="font-bold text-gray-700 uppercase italic">{new Date(rec.competencia + "-02").toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</p>
+                       <p className="text-[8px] text-gray-400 uppercase font-black mt-1">Venc: {new Date(rec.vencimento + "T12:00:00").toLocaleDateString('pt-BR')}</p>
+                    </td>
+                    <td className="px-8 py-4 text-right">
+                       <p className="text-[12px] font-black text-bb-blue italic">R$ {rec.valor.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                       <p className="text-[8px] text-gray-300 font-bold uppercase italic">Base: R$ {rec.salario_base.toLocaleString('pt-BR')}</p>
+                    </td>
+                    <td className="px-8 py-4 text-center">
+                       <span className={`px-4 py-1.5 rounded-full text-[8px] font-black uppercase tracking-widest ${rec.status === 'PAGO' ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-orange-50 text-orange-600 border border-orange-100'}`}>{rec.status}</span>
+                    </td>
+                    <td className="px-8 py-4 text-center">
+                       <div className="flex gap-2 justify-center opacity-0 group-hover:opacity-100 transition-all">
+                          <button onClick={() => { setEditingId(rec.id); setFormData(rec); setIsModalOpen(true); }} className="w-8 h-8 bg-bb-blue text-white rounded-lg flex items-center justify-center shadow-md">✏️</button>
+                          <button onClick={() => onDelete(rec.id)} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white transition-all">✕</button>
+                       </div>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
       {isModalOpen && (
-        <div className="fixed inset-0 bg-bb-blue/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <form onSubmit={handleSave} className="bg-white rounded-[3rem] p-10 w-full max-w-sm space-y-6 animate-in zoom-in shadow-2xl">
-            <h3 className="text-xl font-black text-bb-blue italic uppercase tracking-tighter">Registrar Parcela</h3>
-            <div className="flex gap-3">
-              <button type="button" onClick={() => setFormData({...formData, quem: 'Paulo'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-black uppercase border-2 ${formData.quem === 'Paulo' ? 'bg-bb-blue text-white' : 'bg-gray-50 text-gray-400'}`}>Paulo</button>
-              <button type="button" onClick={() => setFormData({...formData, quem: 'Débora'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-black uppercase border-2 ${formData.quem === 'Débora' ? 'bg-bb-yellow text-bb-blue border-bb-yellow' : 'bg-gray-50 text-gray-400'}`}>Débora</button>
+        <div className="fixed inset-0 bg-bb-blue/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <form onSubmit={handleSave} className="bg-white rounded-[2.5rem] p-10 w-full max-w-sm space-y-6 animate-in zoom-in duration-300 shadow-2xl">
+            <div className="border-b border-gray-100 pb-4">
+              <h3 className="text-xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Lançamento de GPS</h3>
+              <p className="text-[9px] text-gray-400 font-bold uppercase mt-1 italic">Contribuição Técnica Previdenciária</p>
             </div>
+            
+            <div className="flex bg-gray-50 p-1 rounded-xl border border-gray-100">
+               <button type="button" onClick={() => setFormData({...formData, quem: 'Paulo'})} className={`flex-1 py-3 rounded-lg text-[10px] font-black uppercase transition-all ${formData.quem === 'Paulo' ? 'bg-white text-bb-blue shadow-sm' : 'text-gray-400'}`}>Paulo</button>
+               <button type="button" onClick={() => setFormData({...formData, quem: 'Débora'})} className={`flex-1 py-3 rounded-lg text-[10px] font-black uppercase transition-all ${formData.quem === 'Débora' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-400'}`}>Débora</button>
+            </div>
+            
             <div className="grid grid-cols-2 gap-4">
-              <input type="month" required className="w-full bg-gray-50 p-4 rounded-2xl text-xs font-bold" value={formData.competencia} onChange={e => setFormData({...formData, competencia: e.target.value})} />
-              <input type="number" required className="w-full bg-gray-50 p-4 rounded-2xl text-xs font-bold" value={formData.numero_parcela} onChange={e => setFormData({...formData, numero_parcela: Number(e.target.value)})} />
+               <div className="space-y-1">
+                  <label className="text-[9px] font-black text-bb-blue uppercase italic ml-1">Mês Ref.</label>
+                  <input type="month" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold border-none outline-none focus:ring-2 focus:ring-bb-blue" value={formData.competencia} onChange={e => setFormData({...formData, competencia: e.target.value})} />
+               </div>
+               <div className="space-y-1">
+                  <label className="text-[9px] font-black text-bb-blue uppercase italic ml-1">Parcela Nº</label>
+                  <input type="number" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold border-none outline-none focus:ring-2 focus:ring-bb-blue" value={formData.numero_parcela} onChange={e => setFormData({...formData, numero_parcela: Number(e.target.value)})} />
+               </div>
             </div>
-            <select className="w-full bg-gray-50 p-4 rounded-2xl text-xs font-bold" value={formData.status} onChange={e => setFormData({...formData, status: e.target.value as StatusTransacao})}>
-              <option value="PLANEJADO">Planejado</option><option value="PAGO">Pago</option>
-            </select>
-            <div className="flex gap-4 pt-4"><button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 text-[10px] font-black uppercase text-gray-400">Sair</button><button type="submit" className="flex-[2] bg-bb-blue text-white py-4 rounded-2xl text-[10px] font-black uppercase shadow-xl tracking-widest">Salvar</button></div>
+
+            <div className="space-y-1">
+               <label className="text-[9px] font-black text-bb-blue uppercase italic ml-1">Estágio Financeiro</label>
+               <select className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold border-none outline-none focus:ring-2 focus:ring-bb-blue" value={formData.status} onChange={e => setFormData({...formData, status: e.target.value as StatusTransacao})}>
+                  <option value="PLANEJADO">Planejado / Meta</option>
+                  <option value="PENDENTE">Pendente Pagamento</option>
+                  <option value="PAGO">Pago / Confirmado</option>
+               </select>
+            </div>
+
+            <div className="flex gap-4 pt-4">
+               <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 text-[10px] font-black uppercase text-gray-400 italic">Descartar</button>
+               <button type="submit" className="flex-[2] bg-bb-blue text-white py-4 rounded-xl text-[10px] font-black uppercase shadow-xl tracking-widest">Sincronizar Nuvem</button>
+            </div>
           </form>
         </div>
       )}
