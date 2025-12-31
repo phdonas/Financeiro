@@ -72,7 +72,6 @@ export interface Transacao {
   origem: 'IMPORTACAO' | 'MANUAL';
   recorrencia?: ConfigRecorrencia;
   receipt_id?: string;
-  // Campos Habitação PT (Restaurados Fase 2)
   parcela_atual?: number;
   total_parcelas?: number;
   saldo_devedor_restante?: number;
@@ -105,6 +104,7 @@ export interface Receipt {
   description: string;
   is_paid: boolean;
   flag_calcula_premiacao: boolean;
+  document_url?: string; // Novo campo Fase 3
 }
 
 export interface InssRecord {
