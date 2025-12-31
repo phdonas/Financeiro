@@ -2,9 +2,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Permite que qualquer usuário autenticado gerencie seus próprios dados.
-    // O uso de {allPaths=**} garante que subcoleções e caminhos dinâmicos não sofram bloqueio.
-    match /{allPaths=**} {
+    // Permite leitura e escrita em qualquer documento se o usuário estiver autenticado.
+    // Esta regra cobre todas as coleções: transacoes, receipts, investments, etc.
+    match /{document=**} {
       allow read, write: if request.auth != null;
     }
   }
