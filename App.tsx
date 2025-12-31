@@ -10,8 +10,7 @@ import {
   deleteDoc, 
   query, 
   where,
-  limit,
-  or
+  limit
 } from "firebase/firestore";
 
 import Sidebar from './components/Sidebar';
@@ -60,8 +59,6 @@ const App: React.FC = () => {
     if (!user) return;
 
     const sync = (coll: string, setter: Function, sortField?: string) => {
-      // Ajuste técnico: Buscamos documentos do usuário OU documentos sem dono (migração)
-      // Nota: o Firestore 'or' exige índices específicos, caso falhe, usamos o filtro básico.
       const q = query(
         collection(db, coll), 
         where("user_uid", "==", user.uid),
@@ -148,7 +145,7 @@ const App: React.FC = () => {
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'dashboard': return <Dashboard viewMode={viewMode} transacoes={transacoes} orcamentos={orcamentos} categorias={categorias} />;
+      case 'dashboard': return <Dashboard viewMode={viewMode} transacoes={transacoes} orcamentos={orcamentos} categorias={categorias} investments={investments} />;
       case 'ledger': return <Ledger viewMode={viewMode} transacoes={transacoes} categorias={categorias} formasPagamento={formasPagamento} onSave={(t) => dbSave('transacoes', t.id, t)} onDelete={(id) => dbDelete('transacoes', id)} />;
       case 'inss': return <InssBrasil records={inssRecords} configs={inssConfigs} onSave={(r) => dbSave('inssRecords', r.id, r)} onDelete={(id) => dbDelete('inssRecords', id)} />;
       case 'receipts': return <Receipts viewMode={viewMode} receipts={receipts} fornecedores={fornecedores} categorias={categorias} formasPagamento={formasPagamento} onSave={(r) => dbSave('receipts', r.internal_id, r)} onDelete={(id) => dbDelete('receipts', id)} onSaveTx={(t) => dbSave('transacoes', t.id, t)} />;
@@ -166,7 +163,7 @@ const App: React.FC = () => {
             inssConfigs={inssConfigs} onSaveInss={(i) => dbSave('inssConfigs', i.ano.toString(), i)} onDeleteInss={(ano) => dbDelete('inssConfigs', ano.toString())}
           />
         );
-      default: return <Dashboard viewMode={viewMode} transacoes={transacoes} orcamentos={orcamentos} categorias={categorias} />;
+      default: return <Dashboard viewMode={viewMode} transacoes={transacoes} orcamentos={orcamentos} categorias={categorias} investments={investments} />;
     }
   };
 
