@@ -1,0 +1,15 @@
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Permite que qualquer usuário autenticado gerencie seus próprios dados
+    match /{collection}/{document} {
+      allow read, write: if request.auth != null && (
+        // Se o documento existe, verifica o dono
+        (resource != null && resource.data.user_uid == request.auth.uid) ||
+        // Se é um novo documento, permite se o campo user_uid for o do usuário
+        (resource == null && request.resource.data.user_uid == request.auth.uid)
+      );
+    }
+  }
+}

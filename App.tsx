@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { auth, db } from './lib/firebase';
 import { onAuthStateChanged, signOut } from "firebase/auth";
@@ -59,9 +60,17 @@ const App: React.FC = () => {
     if (!user) return;
 
     const sync = (coll: string, setter: Function, sortField?: string) => {
-      const q = sortField 
-        ? query(collection(db, coll), orderBy(sortField, 'desc'), limit(1000)) 
-        : collection(db, coll);
+      // CRITICAL: We must filter by user_uid in the query to match Firestore security rules.
+      let q = query(
+        collection(db, coll), 
+        where("user_uid", "==", user.uid)
+      );
+      
+      if (sortField) {
+        q = query(q, orderBy(sortField, 'desc'));
+      }
+      
+      q = query(q, limit(1000));
         
       return onSnapshot(q, (snap) => {
         const data = snap.docs.map(d => ({ ...d.data(), id: d.id }));
