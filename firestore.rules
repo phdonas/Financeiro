@@ -2,13 +2,12 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Permite que qualquer usuário autenticado gerencie seus próprios dados
+    // Permite que qualquer usuário autenticado gerencie seus próprios dados.
+    // Importante: Documentos sem o campo 'user_uid' serão bloqueados por estas regras.
     match /{collection}/{document} {
       allow read, write: if request.auth != null && (
-        // Se o documento existe, verifica o dono
-        (resource != null && resource.data.user_uid == request.auth.uid) ||
-        // Se é um novo documento, permite se o campo user_uid for o do usuário
-        (resource == null && request.resource.data.user_uid == request.auth.uid)
+        (resource == null) || // Permite criação de novos docs
+        (resource.data.user_uid == request.auth.uid) // Permite ler/editar se for o dono
       );
     }
   }

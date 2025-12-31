@@ -9,7 +9,6 @@ import {
   setDoc, 
   deleteDoc, 
   query, 
-  orderBy,
   where,
   limit
 } from "firebase/firestore";
@@ -60,23 +59,31 @@ const App: React.FC = () => {
     if (!user) return;
 
     const sync = (coll: string, setter: Function, sortField?: string) => {
-      // CRITICAL: We must filter by user_uid in the query to match Firestore security rules.
-      let q = query(
+      // Para evitar erros de permissão causados por falta de índices (Composite Indexes)
+      // filtramos pelo usuário no servidor, mas ordenamos no cliente.
+      const q = query(
         collection(db, coll), 
-        where("user_uid", "==", user.uid)
+        where("user_uid", "==", user.uid),
+        limit(1000)
       );
-      
-      if (sortField) {
-        q = query(q, orderBy(sortField, 'desc'));
-      }
-      
-      q = query(q, limit(1000));
         
       return onSnapshot(q, (snap) => {
-        const data = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        let data = snap.docs.map(d => ({ ...d.data(), id: d.id }));
+        
+        // Ordenação Client-Side para máxima compatibilidade e performance
+        if (sortField) {
+          data = data.sort((a: any, b: any) => {
+            const valA = a[sortField] || '';
+            const valB = b[sortField] || '';
+            return valB.toString().localeCompare(valA.toString());
+          });
+        }
+        
         setter(data);
       }, (error) => {
-        console.error(`Erro na sincronização da coleção ${coll}:`, error.message);
+        console.error(`Erro crítico na coleção ${coll}:`, error.message);
+        // Se houver erro de permissão, pode ser que as regras não foram publicadas
+        // ou o usuário está tentando acessar algo que não possui user_uid.
       });
     };
 
@@ -104,7 +111,7 @@ const App: React.FC = () => {
       await setDoc(doc(db, coll, docId), { 
         ...cleanData, 
         id: docId,
-        user_uid: user.uid,
+        user_uid: user.uid, // Garante que novos dados tenham o ID do dono
         updated_at: new Date().toISOString()
       }, { merge: true });
     } catch (e) { 
@@ -144,7 +151,7 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard': return <Dashboard viewMode={viewMode} transacoes={transacoes} orcamentos={orcamentos} categorias={categorias} />;
-      case 'ledger': return <Ledger viewMode={viewMode} transacoes={transacoes} categorias={categorias} formasPagamento={formasPagamento} orcamentos={orcamentos} onSave={(t) => dbSave('transacoes', t.id, t)} onDelete={(id) => dbDelete('transacoes', id)} />;
+      case 'ledger': return <Ledger viewMode={viewMode} transacoes={transacoes} categorias={categorias} formasPagamento={formasPagamento} onSave={(t) => dbSave('transacoes', t.id, t)} onDelete={(id) => dbDelete('transacoes', id)} />;
       case 'inss': return <InssBrasil records={inssRecords} configs={inssConfigs} onSave={(r) => dbSave('inssRecords', r.id, r)} onDelete={(id) => dbDelete('inssRecords', id)} />;
       case 'receipts': return <Receipts viewMode={viewMode} receipts={receipts} fornecedores={fornecedores} categorias={categorias} formasPagamento={formasPagamento} onSave={(r) => dbSave('receipts', r.internal_id, r)} onDelete={(id) => dbDelete('receipts', id)} onSaveTx={(t) => dbSave('transacoes', t.id, t)} />;
       case 'investments': return <Investments viewMode={viewMode} initialAssets={investments} onSave={(a) => dbSave('investments', a.id, a)} onDelete={(id) => dbDelete('investments', id)} />;
@@ -170,9 +177,9 @@ const App: React.FC = () => {
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
         <Header viewMode={viewMode} setViewMode={setViewMode} title={activeTab} />
-        <main className="flex-1 overflow-y-auto">{renderContent()}</main>
-        <button onClick={handleLogout} className="fixed bottom-6 right-6 w-12 h-12 bg-white text-gray-400 hover:text-red-500 rounded-full shadow-2xl flex items-center justify-center transition-all z-50 border border-gray-100 hover:scale-110 active:scale-95" title="Encerrar Sessão">
-          <span className="text-xl">🚪</span>
+        <main className="flex-1 overflow-y-auto bg-gray-50/30">{renderContent()}</main>
+        <button onClick={handleLogout} className="fixed bottom-6 right-6 w-12 h-12 bg-white text-gray-300 hover:text-red-500 rounded-full shadow-2xl flex items-center justify-center transition-all z-50 border border-gray-100 hover:scale-110 active:scale-95 group" title="Encerrar Sessão">
+          <span className="text-xl group-hover:rotate-12 transition-transform">🚪</span>
         </button>
       </div>
     </div>
