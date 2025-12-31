@@ -123,7 +123,6 @@ export interface InssYearlyConfig {
   debora: { nit: string; total_parcelas: number; data_aposentadoria: string };
 }
 
-// Fixed missing investment types
 export type InvestmentTransactionType = 'BUY' | 'SELL' | 'YIELD' | 'REVALUATION';
 
 export interface InvestmentTransaction {
