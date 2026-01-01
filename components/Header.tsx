@@ -1,4 +1,3 @@
-
 import React from 'react';
 
 interface HeaderProps {
@@ -12,9 +11,9 @@ const Header: React.FC<HeaderProps> = ({ viewMode, setViewMode, title }) => {
     <header className="bg-white border-b border-gray-200 px-8 py-4 flex justify-between items-center sticky top-0 z-10 shadow-sm">
       <div className="flex items-center gap-4">
         <h2 className="text-xl font-bold text-bb-blue tracking-tight uppercase italic">{title}</h2>
-        <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 rounded-full border border-emerald-100">
-           <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
-           <span className="text-[7px] font-black text-emerald-600 uppercase tracking-widest">Nuvem Ativa</span>
+        <div className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 rounded-full border border-blue-100">
+           <div className="w-1.5 h-1.5 bg-blue-500 rounded-full"></div>
+           <span className="text-[7px] font-black text-blue-600 uppercase tracking-widest">Modo Local Ativo</span>
         </div>
       </div>
       

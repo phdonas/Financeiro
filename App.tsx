@@ -1,18 +1,4 @@
-
 import React, { useState, useEffect } from 'react';
-import { auth, db } from './lib/firebase';
-import { onAuthStateChanged, signOut } from "firebase/auth";
-import { 
-  collection, 
-  onSnapshot, 
-  doc, 
-  setDoc, 
-  deleteDoc, 
-  query, 
-  where,
-  limit
-} from "firebase/firestore";
-
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Ledger from './components/Ledger';
@@ -24,16 +10,16 @@ import Settings from './components/Settings';
 import Investments from './components/Investments';
 import TaxReports from './components/TaxReports';
 import InssBrasil from './components/InssBrasil';
-import Login from './components/Login';
+import AIAdvisor from './components/AIAdvisor';
 import { 
-  Transacao, CategoriaContabil, TipoTransacao, FormaPagamento, 
+  Transacao, CategoriaContabil, FormaPagamento, 
   Orcamento, Fornecedor, Receipt, InvestmentAsset, 
   InssRecord, InssYearlyConfig 
 } from './types';
 
+const STORAGE_KEY = 'PHD_FINANCEIRO_DATA_V1';
+
 const App: React.FC = () => {
-  const [user, setUser] = useState<any>(null);
-  const [authLoading, setAuthLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [viewMode, setViewMode] = useState<'BR' | 'PT' | 'GLOBAL'>('GLOBAL');
   
@@ -48,104 +34,69 @@ const App: React.FC = () => {
   const [inssRecords, setInssRecords] = useState<InssRecord[]>([]);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setAuthLoading(false);
-    });
-    return () => unsubscribe();
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) {
+      try {
+        const data = JSON.parse(saved);
+        if (data.categorias) setCategorias(data.categorias);
+        if (data.formasPagamento) setFormasPagamento(data.formasPagamento);
+        if (data.fornecedores) setFornecedores(data.fornecedores);
+        if (data.orcamentos) setOrcamentos(data.orcamentos);
+        if (data.inssConfigs) setInssConfigs(data.inssConfigs);
+        if (data.transacoes) setTransacoes(data.transacoes);
+        if (data.receipts) setReceipts(data.receipts);
+        if (data.investments) setInvestments(data.investments);
+        if (data.inssRecords) setInssRecords(data.inssRecords);
+      } catch (e) {
+        console.error("Erro ao carregar dados locais:", e);
+      }
+    }
   }, []);
 
   useEffect(() => {
-    if (!user) return;
-
-    const sync = (coll: string, setter: Function, sortField?: string) => {
-      const q = query(
-        collection(db, coll), 
-        where("user_uid", "==", user.uid),
-        limit(1000)
-      );
-        
-      return onSnapshot(q, (snap) => {
-        let data = snap.docs.map(d => ({ ...d.data(), id: d.id }));
-        
-        if (sortField) {
-          data = data.sort((a: any, b: any) => {
-            const valA = a[sortField] || '';
-            const valB = b[sortField] || '';
-            return valB.toString().localeCompare(valA.toString());
-          });
-        }
-        
-        setter(data);
-      }, (error) => {
-        console.error(`Erro crítico na coleção ${coll}:`, error.message);
-      });
+    const dataToSave = {
+      categorias, formasPagamento, fornecedores, orcamentos,
+      inssConfigs, transacoes, receipts, investments, inssRecords
     };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
+  }, [categorias, formasPagamento, fornecedores, orcamentos, inssConfigs, transacoes, receipts, investments, inssRecords]);
 
-    const unsubs = [
-      sync('categorias', setCategorias, 'nome'),
-      sync('formasPagamento', setFormasPagamento, 'nome'),
-      sync('fornecedores', setFornecedores, 'nome'),
-      sync('orcamentos', setOrcamentos),
-      sync('inssConfigs', setInssConfigs, 'ano'),
-      sync('transacoes', setTransacoes, 'data_prevista_pagamento'),
-      sync('receipts', setReceipts, 'issue_date'),
-      sync('investments', setInvestments, 'name'),
-      sync('inssRecords', setInssRecords, 'vencimento')
-    ];
+  const dbSave = (collection: string, id: string | undefined, data: any) => {
+    const docId = id || Math.random().toString(36).substr(2, 9);
+    const finalData = { ...data, id: docId, updated_at: new Date().toISOString() };
 
-    return () => unsubs.forEach(un => un());
-  }, [user]);
-
-  const dbSave = async (coll: string, id: string | undefined, data: any) => {
-    if (!user) return;
-    try {
-      const docId = id || Math.random().toString(36).substr(2, 9);
-      const cleanData = JSON.parse(JSON.stringify(data)); 
-      
-      await setDoc(doc(db, coll, docId), { 
-        ...cleanData, 
-        id: docId,
-        user_uid: user.uid,
-        updated_at: new Date().toISOString()
-      }, { merge: true });
-    } catch (e) { 
-      console.error(`Erro ao salvar ${coll}:`, e);
+    switch(collection) {
+      case 'categorias': setCategorias(prev => [...prev.filter(i => i.id !== docId), finalData]); break;
+      case 'formasPagamento': setFormasPagamento(prev => [...prev.filter(i => i.id !== docId), finalData]); break;
+      case 'fornecedores': setFornecedores(prev => [...prev.filter(i => i.id !== docId), finalData]); break;
+      case 'orcamentos': setOrcamentos(prev => [...prev.filter(i => i.id !== docId), finalData]); break;
+      case 'inssConfigs': setInssConfigs(prev => [...prev.filter(i => i.ano !== finalData.ano), finalData]); break;
+      case 'transacoes': setTransacoes(prev => [...prev.filter(i => i.id !== docId), finalData]); break;
+      case 'receipts': setReceipts(prev => [...prev.filter(i => i.internal_id !== docId), finalData]); break;
+      case 'investments': setInvestments(prev => [...prev.filter(i => i.id !== docId), finalData]); break;
+      case 'inssRecords': setInssRecords(prev => [...prev.filter(i => i.id !== docId), finalData]); break;
     }
   };
 
-  const dbDelete = async (coll: string, id: string) => {
-    if (!user || !id) return;
-    if (!confirm('Deseja excluir permanentemente este registro da nuvem?')) return;
-    try {
-      await deleteDoc(doc(db, coll, id));
-    } catch (e) { 
-      console.error(`Erro ao deletar de ${coll}:`, e); 
+  const dbDelete = (collection: string, id: string) => {
+    if (!confirm('Deseja excluir permanentemente este registro local?')) return;
+    switch(collection) {
+      case 'categorias': setCategorias(prev => prev.filter(i => i.id !== id)); break;
+      case 'formasPagamento': setFormasPagamento(prev => prev.filter(i => i.id !== id)); break;
+      case 'fornecedores': setFornecedores(prev => prev.filter(i => i.id !== id)); break;
+      case 'orcamentos': setOrcamentos(prev => prev.filter(i => i.id !== id)); break;
+      case 'inssConfigs': setInssConfigs(prev => prev.filter(i => i.ano.toString() !== id)); break;
+      case 'transacoes': setTransacoes(prev => prev.filter(i => i.id !== id)); break;
+      case 'receipts': setReceipts(prev => prev.filter(i => i.internal_id !== id)); break;
+      case 'investments': setInvestments(prev => prev.filter(i => i.id !== id)); break;
+      case 'inssRecords': setInssRecords(prev => prev.filter(i => i.id !== id)); break;
     }
   };
-
-  const handleLogout = async () => {
-    try { await signOut(auth); } catch (e) { console.error("Erro logout:", e); }
-  };
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-bb-blue flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="loader"></div>
-          <p className="text-white text-[10px] font-black uppercase tracking-[0.3em] opacity-50 italic text-center animate-pulse">
-            Sincronizando com a Nuvem PHD...
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) return <Login />;
 
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard': return <Dashboard viewMode={viewMode} transacoes={transacoes} orcamentos={orcamentos} categorias={categorias} investments={investments} />;
+      case 'ai_advisor': return <AIAdvisor transacoes={transacoes} investimentos={investments} recibos={receipts} />;
       case 'ledger': return <Ledger viewMode={viewMode} transacoes={transacoes} categorias={categorias} formasPagamento={formasPagamento} onSave={(t) => dbSave('transacoes', t.id, t)} onDelete={(id) => dbDelete('transacoes', id)} />;
       case 'inss': return <InssBrasil records={inssRecords} configs={inssConfigs} onSave={(r) => dbSave('inssRecords', r.id, r)} onDelete={(id) => dbDelete('inssRecords', id)} />;
       case 'receipts': return <Receipts viewMode={viewMode} receipts={receipts} fornecedores={fornecedores} categorias={categorias} formasPagamento={formasPagamento} onSave={(r) => dbSave('receipts', r.internal_id, r)} onDelete={(id) => dbDelete('receipts', id)} onSaveTx={(t) => dbSave('transacoes', t.id, t)} />;
@@ -171,11 +122,13 @@ const App: React.FC = () => {
     <div className="flex min-h-screen bg-[#f4f7fa]">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-        <Header viewMode={viewMode} setViewMode={setViewMode} title={activeTab} />
+        <Header viewMode={viewMode} setViewMode={setViewMode} title={activeTab === 'ai_advisor' ? 'Consultor IA' : activeTab} />
         <main className="flex-1 overflow-y-auto bg-gray-50/30">{renderContent()}</main>
-        <button onClick={handleLogout} className="fixed bottom-6 right-6 w-12 h-12 bg-white text-gray-300 hover:text-red-500 rounded-full shadow-2xl flex items-center justify-center transition-all z-50 border border-gray-100 hover:scale-110 active:scale-95 group" title="Encerrar Sessão">
-          <span className="text-xl group-hover:rotate-12 transition-transform">🚪</span>
-        </button>
+        
+        <div className="fixed bottom-4 right-4 bg-white/80 backdrop-blur-sm px-4 py-2 rounded-full border border-gray-100 shadow-sm flex items-center gap-2 pointer-events-none z-50">
+           <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+           <span className="text-[9px] font-black uppercase text-gray-400 tracking-widest italic">Armazenamento Local Ativo</span>
+        </div>
       </div>
     </div>
   );

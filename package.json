@@ -1,6 +1,5 @@
-
 {
-  "name": "phd-financeiro-nuvem",
+  "name": "phd-financeiro-local",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -15,7 +14,7 @@
     "recharts": "^2.15.0",
     "lucide-react": "^0.446.0",
     "xlsx": "^0.18.5",
-    "firebase": "^11.0.1"
+    "@google/genai": "^0.21.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

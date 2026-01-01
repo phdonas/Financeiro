@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { Receipt, Fornecedor, CategoriaContabil, TipoTransacao, FormaPagamento, Transacao } from '../types';
 
@@ -119,7 +118,7 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
             </thead>
             <tbody className="divide-y divide-gray-50">
               {receipts.length === 0 ? (
-                <tr><td colSpan={7} className="py-12 text-center text-gray-300 font-black uppercase italic opacity-30">Sem registros sincronizados</td></tr>
+                <tr><td colSpan={7} className="py-12 text-center text-gray-300 font-black uppercase italic opacity-30">Sem registros locais</td></tr>
               ) : (
                 receipts.map(r => (
                   <tr key={r.internal_id} className="hover:bg-gray-50/40 transition-colors group">
@@ -246,11 +245,11 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
 
                 <div className="lg:col-span-4 space-y-6">
                    <div className="bg-gray-50/50 p-6 rounded-[1.5rem] border border-gray-100 space-y-6">
-                      <h4 className="text-[11px] font-black text-bb-blue uppercase italic tracking-widest border-b border-gray-200 pb-3">Auditoria Técnica</h4>
+                      <h4 className="text-[11px] font-black text-bb-blue uppercase italic tracking-widest border-b border-gray-200 pb-3">Auditoria Local</h4>
                       
                       <div className="space-y-1.5">
-                        <label className="text-[9px] font-black uppercase text-gray-400 ml-1 italic">Link do Documento (Anexo Nuvem)</label>
-                        <input className="w-full bg-white p-3 rounded-xl text-[10px] font-black border border-gray-100 outline-none focus:ring-1 focus:ring-bb-blue/30" value={formData.document_url || ''} onChange={e => setFormData({...formData, document_url: e.target.value})} placeholder="https://cloud.com/fatura.pdf" />
+                        <label className="text-[9px] font-black uppercase text-gray-400 ml-1 italic">Link do Documento (Anexo Local/Nuvem)</label>
+                        <input className="w-full bg-white p-3 rounded-xl text-[10px] font-black border border-gray-100 outline-none focus:ring-1 focus:ring-bb-blue/30" value={formData.document_url || ''} onChange={e => setFormData({...formData, document_url: e.target.value})} placeholder="https://link.com/fatura.pdf" />
                       </div>
 
                       <div className="space-y-1.5">
@@ -283,11 +282,11 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
              <div className="flex flex-wrap justify-between items-center bg-gray-50 p-6 rounded-[1.5rem] border border-gray-100 gap-6">
                 <div className="flex items-center gap-2">
                    <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-                   <span className="text-[10px] font-black text-bb-blue italic opacity-60 uppercase tracking-widest">Sincronia Firebase S3 Auditada</span>
+                   <span className="text-[10px] font-black text-bb-blue italic opacity-60 uppercase tracking-widest">Armazenamento Local Seguro</span>
                 </div>
                 <div className="flex gap-6 items-center">
                    <button type="button" onClick={() => setIsModalOpen(false)} className="text-[11px] font-black uppercase text-gray-400 hover:text-red-500 italic transition-all">Descartar</button>
-                   <button type="submit" className="bg-bb-blue text-white px-12 py-4 rounded-xl text-[12px] font-black uppercase shadow-xl tracking-[0.1em] hover:scale-105 active:scale-95 transition-all">Confirmar Emissão Nuvem</button>
+                   <button type="submit" className="bg-bb-blue text-white px-12 py-4 rounded-xl text-[12px] font-black uppercase shadow-xl tracking-[0.1em] hover:scale-105 active:scale-95 transition-all">Confirmar Emissão</button>
                 </div>
              </div>
           </form>

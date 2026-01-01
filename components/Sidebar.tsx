@@ -1,4 +1,3 @@
-
 import React from 'react';
 
 interface SidebarProps {
@@ -9,13 +8,14 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
   const menuItems = [
     { id: 'dashboard', label: 'Painel Geral', icon: '🏠' },
+    { id: 'ai_advisor', label: 'Consultor IA', icon: '🤖' },
     { id: 'ledger', label: 'Lançamentos', icon: '📑' },
     { id: 'calendar', label: 'Agenda Financeira', icon: '📅' },
     { id: 'inss', label: 'INSS Brasil', icon: '🇧🇷' },
     { id: 'receipts', label: 'Meus Recibos', icon: '🧾' },
     { id: 'investments', label: 'Investimentos', icon: '📈' },
     { id: 'taxes', label: 'Cálculo de IVA', icon: '⚖️' },
-    { id: 'import', label: 'Importar/Exportar', icon: '📥' },
+    { id: 'import', label: 'Importar Dados', icon: '📥' },
     { id: 'settings', label: 'Configurações', icon: '⚙️' },
   ];
 
@@ -30,7 +30,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
         </h1>
       </div>
       
-      <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
+      <nav className="flex-1 px-3 space-y-1 overflow-y-auto scrollbar-hide">
         {menuItems.map((item) => (
           <button
             key={item.id}
@@ -49,10 +49,10 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
 
       <div className="p-4 bg-black/10 m-4 rounded-2xl">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-gray-400 rounded-full flex items-center justify-center text-[10px] font-bold uppercase">P</div>
+          <div className="w-8 h-8 bg-bb-yellow rounded-full flex items-center justify-center text-[10px] font-bold uppercase text-bb-blue">UL</div>
           <div>
-            <p className="text-[10px] font-bold text-white leading-tight uppercase">Paulo S.</p>
-            <p className="text-[8px] text-blue-200 uppercase tracking-tighter">Administrador</p>
+            <p className="text-[10px] font-bold text-white leading-tight uppercase">Usuário Local</p>
+            <p className="text-[8px] text-blue-200 uppercase tracking-tighter italic">Modo Offline</p>
           </div>
         </div>
       </div>

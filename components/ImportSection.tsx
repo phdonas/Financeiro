@@ -1,4 +1,3 @@
-
 import React, { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { Transacao, CategoriaContabil, FormaPagamento, Fornecedor, TipoTransacao, StatusTransacao, Receipt } from '../types';
@@ -72,7 +71,6 @@ const ImportSection: React.FC<ImportSectionProps> = ({
   };
 
   const parseRows = (rows: any[][]) => {
-    // FIX: Changed ':' to '=' to fix assignment and prevent TypeScript from seeing 'rows' as a namespace
     const results = rows.map((row) => {
       if (!row[0] || String(row[0]).trim() === '') return null;
 
@@ -186,7 +184,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
   const confirmSync = () => {
     const validOnes = importResults.filter(r => r.isValid);
     if (validOnes.length === 0) return alert("Dados inválidos.");
-    if (!confirm(`Sincronizar ${validOnes.length} registros?`)) return;
+    if (!confirm(`Importar ${validOnes.length} registros para o armazenamento local?`)) return;
 
     validOnes.forEach(res => {
       if (importType === 'RECIBOS') {
@@ -223,8 +221,8 @@ const ImportSection: React.FC<ImportSectionProps> = ({
       {currentStep === 'TYPE_SELECT' && (
         <div className="space-y-8 text-center">
           <div>
-            <h2 className="text-3xl font-black text-bb-blue italic uppercase tracking-tighter leading-none mb-2">Mapeamento PHD</h2>
-            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-[0.2em] italic opacity-60">Sincronia Firebase</p>
+            <h2 className="text-3xl font-black text-bb-blue italic uppercase tracking-tighter leading-none mb-2">Importação Local</h2>
+            <p className="text-[10px] text-gray-400 font-bold uppercase tracking-[0.2em] italic opacity-60">Carregamento de Planilhas Externas</p>
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -275,7 +273,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
               </div>
               <div className="flex gap-4">
                  <button onClick={() => setCurrentStep('TYPE_SELECT')} className="px-6 py-3 text-[10px] font-black uppercase text-gray-300 hover:text-red-500 italic transition-all">Cancelar</button>
-                 <button onClick={confirmSync} className="bg-bb-blue text-white px-10 py-3.5 rounded-xl text-[11px] font-black uppercase shadow-lg tracking-widest hover:scale-105 active:scale-95 transition-all">Sincronizar</button>
+                 <button onClick={confirmSync} className="bg-bb-blue text-white px-10 py-3.5 rounded-xl text-[11px] font-black uppercase shadow-lg tracking-widest hover:scale-105 active:scale-95 transition-all">Sincronizar Local</button>
               </div>
            </div>
 
