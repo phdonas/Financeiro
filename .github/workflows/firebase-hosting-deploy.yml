@@ -19,7 +19,7 @@ jobs:
           cache: 'npm'
 
       - name: Instalar Dependências
-        run: npm ci
+        run: npm install
 
       - name: Build do Projeto
         run: npm run build
