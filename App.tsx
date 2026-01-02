@@ -28,6 +28,13 @@ import {
   InssYearlyConfig
 } from "./types";
 
+import {
+  getStorageMode,
+  listDocs,
+  upsertDoc,
+  deleteDocById
+} from "./lib/cloudStore";
+
 const STORAGE_KEY = "PHD_FINANCEIRO_DATA_V1";
 
 const App: React.FC = () => {
@@ -36,6 +43,8 @@ const App: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState("dashboard");
   const [viewMode, setViewMode] = useState<"BR" | "PT" | "GLOBAL">("GLOBAL");
+
+  const [storageMode, setStorageMode] = useState<"local" | "cloud">("local");
 
   const [categorias, setCategorias] = useState<CategoriaContabil[]>([]);
   const [formasPagamento, setFormasPagamento] = useState<FormaPagamento[]>([]);
@@ -56,8 +65,40 @@ const App: React.FC = () => {
     return () => unsub();
   }, []);
 
-  // 2) Carregar dados locais (por enquanto)
+  // 2) Ao logar, buscar storageMode do Firestore (default: local)
   useEffect(() => {
+    if (!user) return;
+
+    (async () => {
+      try {
+        const mode = await getStorageMode();
+        setStorageMode(mode);
+      } catch (e) {
+        console.error("Falha ao ler storageMode (assumindo local):", e);
+        setStorageMode("local");
+      }
+    })();
+  }, [user]);
+
+  // 3) Carregar dados: se cloud => Firestore; se local => localStorage
+  useEffect(() => {
+    if (!user) return;
+
+    // CLOUD: por enquanto só formasPagamento (prova de sincronização)
+    if (storageMode === "cloud") {
+      (async () => {
+        try {
+          const fps = await listDocs<FormaPagamento>("paymentMethods");
+          setFormasPagamento(fps || []);
+        } catch (e) {
+          console.error("Falha ao carregar Formas de Pagamento da nuvem:", e);
+        }
+      })();
+
+      return;
+    }
+
+    // LOCAL:
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
@@ -75,10 +116,12 @@ const App: React.FC = () => {
         console.error("Erro ao carregar dados locais:", e);
       }
     }
-  }, []);
+  }, [user, storageMode]);
 
-  // 3) Salvar dados locais (por enquanto)
+  // 4) Salvar dados locais (apenas se estiver em local)
   useEffect(() => {
+    if (storageMode !== "local") return;
+
     const dataToSave = {
       categorias,
       formasPagamento,
@@ -92,6 +135,7 @@ const App: React.FC = () => {
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
   }, [
+    storageMode,
     categorias,
     formasPagamento,
     fornecedores,
@@ -103,10 +147,19 @@ const App: React.FC = () => {
     inssRecords
   ]);
 
-  const dbSave = (collection: string, id: string | undefined, data: any) => {
+  // 5) Save/Delete: cloud só para Formas de Pagamento (por enquanto)
+  const dbSave = async (collection: string, id: string | undefined, data: any) => {
     const docId = id || Math.random().toString(36).substr(2, 9);
     const finalData = { ...data, id: docId, updated_at: new Date().toISOString() };
 
+    // CLOUD (prova): paymentMethods
+    if (storageMode === "cloud" && collection === "formasPagamento") {
+      await upsertDoc("paymentMethods", finalData);
+      setFormasPagamento((prev) => [...prev.filter((i) => i.id !== docId), finalData]);
+      return;
+    }
+
+    // LOCAL: comportamento atual
     switch (collection) {
       case "categorias":
         setCategorias((prev) => [...prev.filter((i) => i.id !== docId), finalData]);
@@ -138,8 +191,17 @@ const App: React.FC = () => {
     }
   };
 
-  const dbDelete = (collection: string, id: string) => {
+  const dbDelete = async (collection: string, id: string) => {
     if (!confirm("Deseja excluir permanentemente este registro?")) return;
+
+    // CLOUD (prova): paymentMethods
+    if (storageMode === "cloud" && collection === "formasPagamento") {
+      await deleteDocById("paymentMethods", id);
+      setFormasPagamento((prev) => prev.filter((i) => i.id !== id));
+      return;
+    }
+
+    // LOCAL
     switch (collection) {
       case "categorias":
         setCategorias((prev) => prev.filter((i) => i.id !== id));
@@ -282,28 +344,29 @@ const App: React.FC = () => {
     }
   };
 
-  // Enquanto checa auth, evita "piscar"
   if (!authChecked) {
     return <div style={{ padding: 24, fontWeight: 700 }}>Carregando…</div>;
   }
 
-  // Se não logou, mostra Login
   if (!user) {
     return <Login />;
   }
 
-  // Logado = app abre
   return (
     <div className="flex min-h-screen bg-[#f4f7fa]">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden relative">
-        <Header viewMode={viewMode} setViewMode={setViewMode} title={activeTab === "ai_advisor" ? "Consultor IA" : activeTab} />
+        <Header
+          viewMode={viewMode}
+          setViewMode={setViewMode}
+          title={activeTab === "ai_advisor" ? "Consultor IA" : activeTab}
+        />
         <main className="flex-1 overflow-y-auto bg-gray-50/30">{renderContent()}</main>
 
         <div className="fixed bottom-4 right-4 bg-white/80 backdrop-blur-sm px-4 py-2 rounded-full border border-gray-100 shadow-sm flex items-center gap-2 pointer-events-none z-50">
-          <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+          <div className={`w-2 h-2 rounded-full ${storageMode === "cloud" ? "bg-green-500" : "bg-yellow-500"}`}></div>
           <span className="text-[9px] font-black uppercase text-gray-400 tracking-widest italic">
-            Login OK (próximo passo: sincronizar na nuvem)
+            {storageMode === "cloud" ? "NUVEM ATIVA" : "MODO LOCAL ATIVO"}
           </span>
         </div>
       </div>
