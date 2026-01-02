@@ -1,79 +1,159 @@
 import React, { useMemo, useState } from "react";
-import type { Categoria, Orcamento, Transacao, Investment } from "../types";
+import { GoogleGenAI } from "@google/genai";
 
-export type AIAdvisorProps = {
-  transacoes?: Transacao[];
-  categorias?: Categoria[];
-  orcamentos?: Orcamento[];
-  investments?: Investment[];
-  viewMode: "local" | "cloud";
+type Transacao = {
+  id: string;
+  tipo?: "DESPESA" | "RECEITA" | string;
+  valor?: number | string;
+  codigo_pais?: string;
+  date?: string;
+  categoria_id?: string;
 };
 
-export default function AIAdvisor({
-  transacoes = [],
-  categorias = [],
-  orcamentos = [],
-  investments = [],
-  viewMode
-}: AIAdvisorProps) {
-  const safeTransacoes = Array.isArray(transacoes) ? transacoes : [];
-  const safeInvestments = Array.isArray(investments) ? investments : [];
+type Investimento = {
+  id: string;
+  current_value?: number | string;
+  country_code?: string;
+};
 
+type Props = {
+  transacoes?: Transacao[];
+  investimentos?: Investimento[];
+};
+
+export default function AIAdvisor({ transacoes, investimentos }: Props) {
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState<string>("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<string>("");
+
+  // ✅ arrays sempre seguros
+  const safeTransacoes = useMemo(
+    () => (Array.isArray(transacoes) ? transacoes : []),
+    [transacoes]
+  );
+
+  const safeInvestimentos = useMemo(
+    () => (Array.isArray(investimentos) ? investimentos : []),
+    [investimentos]
+  );
+
+  // ✅ em Vite, variáveis vêm de import.meta.env (não process.env)
+  // Use VITE_GEMINI_API_KEY (recomendado) ou VITE_API_KEY (fallback)
+  const apiKey =
+    (import.meta as any)?.env?.VITE_GEMINI_API_KEY ||
+    (import.meta as any)?.env?.VITE_API_KEY ||
+    "";
+
+  const ai = useMemo(() => {
+    if (!apiKey) return null;
+    try {
+      return new GoogleGenAI({ apiKey });
+    } catch {
+      return null;
+    }
+  }, [apiKey]);
 
   const summary = useMemo(() => {
     const totalGasto = safeTransacoes
-      .filter((t) => t.tipo === "DESPESA")
-      .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
+      .filter((t) => t?.tipo === "DESPESA")
+      .reduce((acc, t) => acc + Number(t?.valor ?? 0), 0);
 
     const totalRecebido = safeTransacoes
-      .filter((t) => t.tipo === "RECEITA")
-      .reduce((acc, t) => acc + (Number(t.valor) || 0), 0);
+      .filter((t) => t?.tipo === "RECEITA")
+      .reduce((acc, t) => acc + Number(t?.valor ?? 0), 0);
 
-    const patrimonio = safeInvestments.reduce((acc, a) => acc + (Number(a.current_value) || 0), 0);
+    const patrimonio = safeInvestimentos.reduce(
+      (acc, a) => acc + Number(a?.current_value ?? 0),
+      0
+    );
 
-    return { totalGasto, totalRecebido, patrimonio };
-  }, [safeTransacoes, safeInvestments]);
+    const paises = Array.from(
+      new Set(safeTransacoes.map((t) => t?.codigo_pais).filter(Boolean))
+    );
+
+    return { totalGasto, totalRecebido, patrimonio, paises };
+  }, [safeTransacoes, safeInvestimentos]);
 
   async function handleAsk() {
-    setLoading(true);
-    try {
-      // Aqui você pode integrar com IA depois.
-      // Por enquanto, só demonstramos o “resumo” sem quebrar o app.
-      const txt = [
-        `Modo: ${viewMode}`,
-        `Receita: ${summary.totalRecebido.toFixed(2)}`,
-        `Despesa: ${summary.totalGasto.toFixed(2)}`,
-        `Patrimônio: ${summary.patrimonio.toFixed(2)}`
-      ].join("\n");
+    if (!ai) {
+      setAnswer(
+        "⚠️ Chave da API (Gemini) não configurada. Configure VITE_GEMINI_API_KEY no ambiente de build."
+      );
+      return;
+    }
 
-      setResult(txt);
+    if (!question.trim()) return;
+
+    setLoading(true);
+    setAnswer("");
+
+    try {
+      const prompt = `
+Você é um consultor financeiro pessoal. 
+Aqui está um resumo dos meus dados:
+- Total de despesas: ${summary.totalGasto}
+- Total de receitas: ${summary.totalRecebido}
+- Patrimônio (investimentos): ${summary.patrimonio}
+- Países detectados nas transações: ${summary.paises.join(", ") || "N/A"}
+
+Pergunta: ${question}
+
+Responda com:
+1) Diagnóstico
+2) Sugestões práticas
+3) Próximos passos (checklist)
+`;
+
+      const resp = await ai.models.generateContent({
+        model: "gemini-1.5-flash",
+        contents: prompt
+      });
+
+      const text =
+        (resp as any)?.text ||
+        (resp as any)?.response?.text ||
+        JSON.stringify(resp, null, 2);
+
+      setAnswer(typeof text === "string" ? text : JSON.stringify(text, null, 2));
+    } catch (err: any) {
+      setAnswer(`Erro ao consultar IA: ${err?.message || String(err)}`);
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">Consultor IA</h1>
-        <div className="text-xs px-3 py-1 rounded-full bg-white border">
-          {viewMode === "cloud" ? "Nuvem ativa" : "Modo local ativo"}
-        </div>
+    <div style={{ padding: 16 }}>
+      <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
+        Consultor IA
+      </h2>
+
+      <div style={{ marginBottom: 12, fontSize: 14 }}>
+        <div>Despesas: {summary.totalGasto}</div>
+        <div>Receitas: {summary.totalRecebido}</div>
+        <div>Patrimônio: {summary.patrimonio}</div>
+        <div>Países: {summary.paises.join(", ") || "—"}</div>
       </div>
 
-      <div className="bg-white border rounded-xl p-4">
-        <button
-          onClick={handleAsk}
-          disabled={loading}
-          className="px-4 py-2 rounded-lg bg-blue-600 text-white disabled:opacity-60"
-        >
-          {loading ? "Analisando..." : "Gerar diagnóstico"}
-        </button>
+      <textarea
+        value={question}
+        onChange={(e) => setQuestion(e.target.value)}
+        placeholder="Escreva sua pergunta..."
+        style={{ width: "100%", minHeight: 90, padding: 10 }}
+      />
 
-        <pre className="mt-4 whitespace-pre-wrap text-sm">{result}</pre>
-      </div>
+      <button
+        onClick={handleAsk}
+        disabled={loading}
+        style={{ marginTop: 10, padding: "8px 12px", cursor: "pointer" }}
+      >
+        {loading ? "Consultando..." : "Perguntar"}
+      </button>
+
+      {answer && (
+        <pre style={{ marginTop: 12, whiteSpace: "pre-wrap" }}>{answer}</pre>
+      )}
     </div>
   );
 }
+
