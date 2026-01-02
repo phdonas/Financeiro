@@ -1,422 +1,405 @@
-import React, { useState, useEffect } from "react";
-import { onAuthStateChanged, User } from "firebase/auth";
+import React, { useEffect, useMemo, useState } from "react";
 import { auth } from "./lib/firebase";
+import { onIdTokenChanged, User } from "firebase/auth";
 
+import Header from "./components/Header";
 import Sidebar from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
 import Ledger from "./components/Ledger";
-import Receipts from "./components/Receipts";
-import ImportSection from "./components/ImportSection";
-import Calendar from "./components/Calendar";
-import Header from "./components/Header";
 import Settings from "./components/Settings";
-import Investments from "./components/Investments";
 import TaxReports from "./components/TaxReports";
-import InssBrasil from "./components/InssBrasil";
+import Investments from "./components/Investments";
+import Calendar from "./components/Calendar";
+import AIAdvisor from "./components/AIAdvisor";
 
-import { signInWithGoogle, signOutUser } from "./lib/auth";
-import { getStorageMode, listDocs, upsertDoc, deleteDocById } from "./lib/cloudStore";
+import {
+  getStorageMode,
+  upsertDoc,
+  deleteDocById,
+  listDocs,
+  DEFAULT_HOUSEHOLD_ID
+} from "./lib/cloudStore";
 
-type StorageMode = "local" | "cloud";
+import "./App.css";
 
-type Categoria = { id: string; nome: string };
-type FormaPagamento = { id: string; nome: string };
-type Fornecedor = { id: string; nome: string };
-type Orcamento = { id: string; categoriaId: string; mes: string; valor: number };
+// ✅ tipos (mantendo seu padrão atual)
+type ViewMode = "PT" | "BR" | "GLOBAL";
 
-type InssConfig = { id: string; pessoa: string; competencia: string; vencimento: string; valor: number; pago?: boolean };
-type InssRecord = { id: string; pessoa: string; competencia: string; pagoEm?: string; valor: number };
+export type Categoria = {
+  id: string;
+  nome: string;
+  cor?: string;
+};
 
-type Transacao = {
+export type Orcamento = {
+  id: string;
+  categoriaId: string;
+  mes: string; // YYYY-MM
+  valor: number;
+  countryCode?: "PT" | "BR";
+};
+
+export type Transacao = {
+  id: string;
+  tipo: "DESPESA" | "RECEITA";
+  data: string; // YYYY-MM-DD
+  descricao: string;
+  valor: number;
+  categoriaId: string;
+  countryCode?: "PT" | "BR";
+  status?: "PAGO" | "A_PAGAR" | "VENCIDO";
+  data_prevista_pagamento?: string;
+};
+
+export type InvestmentAsset = {
+  id: string;
+  name: string;
+  type: string;
+  country_code: "PT" | "BR";
+  current_value: number;
+};
+
+export type Recibo = {
   id: string;
   date: string;
-  tipo: "receita" | "despesa";
-  categoriaId: string;
-  pagamentoId: string;
-  fornecedorId?: string;
-  descricao?: string;
-  valor: number;
+  description: string;
+  base_amount: number;
+  iva_amount: number;
+  irs_amount: number;
+  received_amount: number;
 };
 
-type Receipt = { id: string; date: string; fornecedorId: string; valor: number; descricao?: string };
-type Investment = { id: string; date: string; tipo: string; valor: number; descricao?: string };
-
-const STORAGE_KEY = "PHD_FINANCEIRO_DATA_V1";
-
-// Mapeamento: nome "local" (estado/UI) -> nome da coleção no Firestore (subcoleção dentro do household)
-// Observação: formasPagamento virou "paymentMethods" na nuvem para manter o padrão do app.
-const CLOUD_MAP: Record<string, string> = {
+// ✅ local keys
+const LS_KEYS = {
   categorias: "categorias",
-  formasPagamento: "paymentMethods",
-  fornecedores: "fornecedores",
   orcamentos: "orcamentos",
-  inssConfigs: "inssConfigs",
-  inssRecords: "inssRecords",
   transacoes: "transacoes",
-  receipts: "receipts",
   investments: "investments",
+  receipts: "receipts"
 };
+
+function safeJsonParse<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
 
 export default function App() {
+  // auth
   const [user, setUser] = useState<User | null>(null);
-  const [storageMode, setStorageMode] = useState<StorageMode>("local");
+  const [authChecked, setAuthChecked] = useState(false);
 
-  const [activePage, setActivePage] = useState<string>("dashboard");
+  // view + page
+  const [viewMode, setViewMode] = useState<ViewMode>("PT");
+  const [activePage, setActivePage] = useState<string>("DASHBOARD");
 
+  // storage mode
+  const [storageMode, setStorageMode] = useState<"local" | "cloud">("local");
+
+  // data
   const [categorias, setCategorias] = useState<Categoria[]>([]);
-  const [formasPagamento, setFormasPagamento] = useState<FormaPagamento[]>([]);
-  const [fornecedores, setFornecedores] = useState<Fornecedor[]>([]);
   const [orcamentos, setOrcamentos] = useState<Orcamento[]>([]);
-
-  const [inssConfigs, setInssConfigs] = useState<InssConfig[]>([]);
-  const [inssRecords, setInssRecords] = useState<InssRecord[]>([]);
-
   const [transacoes, setTransacoes] = useState<Transacao[]>([]);
-  const [receipts, setReceipts] = useState<Receipt[]>([]);
-  const [investments, setInvestments] = useState<Investment[]>([]);
+  const [investments, setInvestments] = useState<InvestmentAsset[]>([]);
+  const [receipts, setReceipts] = useState<Recibo[]>([]);
 
-  // 1) AUTH
+  // --- 1) auth listener (token pronto) ---
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u));
+    const unsub = onIdTokenChanged(auth, (u) => {
+      setUser(u);
+      setAuthChecked(true);
+    });
     return () => unsub();
   }, []);
 
-  // 2) Carrega do localStorage no boot (apenas para modo local / fallback)
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-
-      setCategorias(parsed.categorias || []);
-      setFormasPagamento(parsed.formasPagamento || []);
-      setFornecedores(parsed.fornecedores || []);
-      setOrcamentos(parsed.orcamentos || []);
-
-      setInssConfigs(parsed.inssConfigs || []);
-      setInssRecords(parsed.inssRecords || []);
-
-      setTransacoes(parsed.transacoes || []);
-      setReceipts(parsed.receipts || []);
-      setInvestments(parsed.investments || []);
-    } catch (e) {
-      console.error("Falha ao carregar localStorage:", e);
-    }
-  }, []);
-
-  // 3) Descobre o modo (cloud/local) a partir do Firestore
+  // --- 2) ao logar, lê storageMode do Firestore (com retry) ---
   useEffect(() => {
     if (!user) return;
 
-    getStorageMode()
-      .then((mode) => {
-        setStorageMode(mode);
-      })
-      .catch((err) => {
-        console.error("Falha ao ler storageMode (assumindo local):", err);
-        setStorageMode("local");
-      });
+    let cancelled = false;
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    (async () => {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          // garante token antes de Firestore (evita permission error “cedo demais”)
+          await auth.currentUser?.getIdToken();
+
+          const mode = await getStorageMode(DEFAULT_HOUSEHOLD_ID);
+          if (!cancelled) setStorageMode(mode);
+          return;
+        } catch (e) {
+          if (attempt === 3) {
+            console.error("Falha ao ler storageMode (assumindo local):", e);
+            if (!cancelled) setStorageMode("local");
+            return;
+          }
+          await sleep(500);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
-  // 4) Se cloud: carrega tudo do Firestore
+  const isCloud = storageMode === "cloud" && !!user;
+
+  // --- 3) carregar dados (cloud ou local) ---
   useEffect(() => {
-    if (!user) return;
+    // sempre garantir arrays (evita undefined em reduce/filter)
+    if (!authChecked) return;
 
-    if (storageMode === "cloud") {
-      (async () => {
-        try {
-          const [
-            categoriasCloud,
-            formasPagamentoCloud,
-            fornecedoresCloud,
-            orcamentosCloud,
-            inssConfigsCloud,
-            inssRecordsCloud,
-            transacoesCloud,
-            receiptsCloud,
-            investmentsCloud,
-          ] = await Promise.all([
-            listDocs<any>(CLOUD_MAP.categorias),
-            listDocs<any>(CLOUD_MAP.formasPagamento),
-            listDocs<any>(CLOUD_MAP.fornecedores),
-            listDocs<any>(CLOUD_MAP.orcamentos),
-            listDocs<any>(CLOUD_MAP.inssConfigs),
-            listDocs<any>(CLOUD_MAP.inssRecords),
-            listDocs<any>(CLOUD_MAP.transacoes),
-            listDocs<any>(CLOUD_MAP.receipts),
-            listDocs<any>(CLOUD_MAP.investments),
-          ]);
+    if (!isCloud) {
+      const cats = safeJsonParse<Categoria[]>(localStorage.getItem(LS_KEYS.categorias), []);
+      const orcs = safeJsonParse<Orcamento[]>(localStorage.getItem(LS_KEYS.orcamentos), []);
+      const txs = safeJsonParse<Transacao[]>(localStorage.getItem(LS_KEYS.transacoes), []);
+      const inv = safeJsonParse<InvestmentAsset[]>(localStorage.getItem(LS_KEYS.investments), []);
+      const rec = safeJsonParse<Recibo[]>(localStorage.getItem(LS_KEYS.receipts), []);
 
-          setCategorias(categoriasCloud);
-          setFormasPagamento(formasPagamentoCloud);
-          setFornecedores(fornecedoresCloud);
-          setOrcamentos(orcamentosCloud);
-
-          setInssConfigs(inssConfigsCloud);
-          setInssRecords(inssRecordsCloud);
-
-          setTransacoes(transacoesCloud);
-          setReceipts(receiptsCloud);
-          setInvestments(investmentsCloud);
-        } catch (err) {
-          console.error("Falha ao carregar dados da nuvem:", err);
-        }
-      })();
-      return;
-    }
-  }, [storageMode, user]);
-
-  // 5) Persistência local (somente no modo local)
-  useEffect(() => {
-    if (storageMode !== "local") return;
-
-    try {
-      const payload = {
-        categorias,
-        formasPagamento,
-        fornecedores,
-        orcamentos,
-        inssConfigs,
-        inssRecords,
-        transacoes,
-        receipts,
-        investments,
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch (e) {
-      console.error("Falha ao salvar no localStorage:", e);
-    }
-  }, [
-    storageMode,
-    categorias,
-    formasPagamento,
-    fornecedores,
-    orcamentos,
-    inssConfigs,
-    inssRecords,
-    transacoes,
-    receipts,
-    investments,
-  ]);
-
-  const dbSave = async (collectionName: string, item: any) => {
-    // Segurança mínima: todo item salvo precisa ter id
-    if (!item?.id) {
-      console.error(`dbSave: item sem id para coleção "${collectionName}"`, item);
+      setCategorias(Array.isArray(cats) ? cats : []);
+      setOrcamentos(Array.isArray(orcs) ? orcs : []);
+      setTransacoes(Array.isArray(txs) ? txs : []);
+      setInvestments(Array.isArray(inv) ? inv : []);
+      setReceipts(Array.isArray(rec) ? rec : []);
       return;
     }
 
-    // Helper: aplica upsert no estado local (para a UI refletir imediatamente)
-    const applyUpsert = (setter: React.Dispatch<React.SetStateAction<any[]>>) => {
-      setter((prev) => {
-        const idx = prev.findIndex((x: any) => x.id === item.id);
-        if (idx >= 0) {
-          const copy = [...prev];
-          copy[idx] = item;
-          return copy;
-        }
-        return [...prev, item];
-      });
-    };
+    // cloud load
+    (async () => {
+      const [cats, orcs, txs, inv, rec] = await Promise.all([
+        listDocs<Categoria>("categorias", DEFAULT_HOUSEHOLD_ID),
+        listDocs<Orcamento>("orcamentos", DEFAULT_HOUSEHOLD_ID),
+        listDocs<Transacao>("transacoes", DEFAULT_HOUSEHOLD_ID),
+        listDocs<InvestmentAsset>("investments", DEFAULT_HOUSEHOLD_ID),
+        listDocs<Recibo>("receipts", DEFAULT_HOUSEHOLD_ID)
+      ]);
 
-    // 1) CLOUD MODE
-    if (storageMode === "cloud") {
-      const cloudCollection = CLOUD_MAP[collectionName];
-      if (!cloudCollection) {
-        console.warn(`Coleção "${collectionName}" não mapeada para nuvem. Salvando apenas local.`);
-      } else {
-        try {
-          await upsertDoc(cloudCollection, item);
-        } catch (err) {
-          console.error(`Falha ao salvar na nuvem (${cloudCollection}). Mantendo UI sem persistir:`, err);
-          return;
-        }
-      }
+      setCategorias(Array.isArray(cats) ? cats : []);
+      setOrcamentos(Array.isArray(orcs) ? orcs : []);
+      setTransacoes(Array.isArray(txs) ? txs : []);
+      setInvestments(Array.isArray(inv) ? inv : []);
+      setReceipts(Array.isArray(rec) ? rec : []);
+    })().catch((e) => {
+      console.error("Erro ao carregar dados do Firestore:", e);
+    });
+  }, [isCloud, authChecked]);
 
-      // Atualiza o estado local para refletir na tela (mesmo em cloud)
-      switch (collectionName) {
-        case "categorias": applyUpsert(setCategorias); break;
-        case "formasPagamento": applyUpsert(setFormasPagamento); break;
-        case "fornecedores": applyUpsert(setFornecedores); break;
-        case "orcamentos": applyUpsert(setOrcamentos); break;
-        case "inssConfigs": applyUpsert(setInssConfigs); break;
-        case "inssRecords": applyUpsert(setInssRecords); break;
-        case "transacoes": applyUpsert(setTransacoes); break;
-        case "receipts": applyUpsert(setReceipts); break;
-        case "investments": applyUpsert(setInvestments); break;
-        default:
-          console.warn(`dbSave: coleção desconhecida "${collectionName}" (cloud).`);
-      }
+  // --- 4) wrappers de CRUD (cloud/local) ---
+  const saveCategoria = async (item: Categoria) => {
+    const next = [...(Array.isArray(categorias) ? categorias : []).filter((c) => c.id !== item.id), item];
+    setCategorias(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.categorias, JSON.stringify(next));
       return;
     }
+    await upsertDoc("categorias", item, DEFAULT_HOUSEHOLD_ID);
+  };
 
-    // 2) LOCAL MODE
-    switch (collectionName) {
-      case "categorias": applyUpsert(setCategorias); break;
-      case "formasPagamento": applyUpsert(setFormasPagamento); break;
-      case "fornecedores": applyUpsert(setFornecedores); break;
-      case "orcamentos": applyUpsert(setOrcamentos); break;
-      case "inssConfigs": applyUpsert(setInssConfigs); break;
-      case "inssRecords": applyUpsert(setInssRecords); break;
-      case "transacoes": applyUpsert(setTransacoes); break;
-      case "receipts": applyUpsert(setReceipts); break;
-      case "investments": applyUpsert(setInvestments); break;
+  const deleteCategoria = async (id: string) => {
+    const next = (Array.isArray(categorias) ? categorias : []).filter((c) => c.id !== id);
+    setCategorias(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.categorias, JSON.stringify(next));
+      return;
+    }
+    await deleteDocById("categorias", id, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  const saveOrcamento = async (item: Orcamento) => {
+    const base = Array.isArray(orcamentos) ? orcamentos : [];
+    const next = [...base.filter((o) => o.id !== item.id), item];
+    setOrcamentos(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.orcamentos, JSON.stringify(next));
+      return;
+    }
+    await upsertDoc("orcamentos", item, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  const deleteOrcamento = async (id: string) => {
+    const next = (Array.isArray(orcamentos) ? orcamentos : []).filter((o) => o.id !== id);
+    setOrcamentos(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.orcamentos, JSON.stringify(next));
+      return;
+    }
+    await deleteDocById("orcamentos", id, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  const saveTransacao = async (item: Transacao) => {
+    const base = Array.isArray(transacoes) ? transacoes : [];
+    const next = [...base.filter((t) => t.id !== item.id), item];
+    setTransacoes(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.transacoes, JSON.stringify(next));
+      return;
+    }
+    await upsertDoc("transacoes", item, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  const deleteTransacao = async (id: string) => {
+    const next = (Array.isArray(transacoes) ? transacoes : []).filter((t) => t.id !== id);
+    setTransacoes(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.transacoes, JSON.stringify(next));
+      return;
+    }
+    await deleteDocById("transacoes", id, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  const saveInvestment = async (item: InvestmentAsset) => {
+    const base = Array.isArray(investments) ? investments : [];
+    const next = [...base.filter((a) => a.id !== item.id), item];
+    setInvestments(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.investments, JSON.stringify(next));
+      return;
+    }
+    await upsertDoc("investments", item, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  const deleteInvestment = async (id: string) => {
+    const next = (Array.isArray(investments) ? investments : []).filter((a) => a.id !== id);
+    setInvestments(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.investments, JSON.stringify(next));
+      return;
+    }
+    await deleteDocById("investments", id, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  const saveReceipt = async (item: Recibo) => {
+    const base = Array.isArray(receipts) ? receipts : [];
+    const next = [...base.filter((r) => r.id !== item.id), item];
+    setReceipts(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.receipts, JSON.stringify(next));
+      return;
+    }
+    await upsertDoc("receipts", item, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  const deleteReceipt = async (id: string) => {
+    const next = (Array.isArray(receipts) ? receipts : []).filter((r) => r.id !== id);
+    setReceipts(next);
+
+    if (!isCloud) {
+      localStorage.setItem(LS_KEYS.receipts, JSON.stringify(next));
+      return;
+    }
+    await deleteDocById("receipts", id, DEFAULT_HOUSEHOLD_ID);
+  };
+
+  // --- 5) render pages ---
+  const page = useMemo(() => {
+    const txs = Array.isArray(transacoes) ? transacoes : [];
+    const cats = Array.isArray(categorias) ? categorias : [];
+    const orcs = Array.isArray(orcamentos) ? orcamentos : [];
+    const inv = Array.isArray(investments) ? investments : [];
+    const rec = Array.isArray(receipts) ? receipts : [];
+
+    switch (activePage) {
+      case "DASHBOARD":
+        return (
+          <Dashboard
+            viewMode={viewMode === "GLOBAL" ? "PT" : viewMode}
+            transacoes={txs}
+            orcamentos={orcs}
+            categorias={cats}
+            investments={inv}
+          />
+        );
+
+      case "LANCAMENTOS":
+        return (
+          <Ledger
+            viewMode={viewMode}
+            transacoes={txs}
+            categorias={cats}
+            onSave={saveTransacao}
+            onDelete={deleteTransacao}
+          />
+        );
+
+      case "AGENDA":
+        return <Calendar viewMode={viewMode} transacoes={txs} />;
+
+      case "INVESTIMENTOS":
+        return (
+          <Investments
+            viewMode={viewMode === "GLOBAL" ? "PT" : viewMode}
+            investments={inv}
+            onSave={saveInvestment}
+            onDelete={deleteInvestment}
+          />
+        );
+
+      case "RELATORIOS":
+        return <TaxReports viewMode={viewMode} recibos={rec} />;
+
+      case "CONSULTOR_IA":
+        return <AIAdvisor transacoes={txs} investimentos={inv} recibos={rec} />;
+
+      case "CONFIG":
+        return (
+          <Settings
+            viewMode={viewMode}
+            storageMode={storageMode}
+            onStorageModeChange={setStorageMode}
+            categorias={cats}
+            orcamentos={orcs}
+            onSaveCategoria={saveCategoria}
+            onDeleteCategoria={deleteCategoria}
+            onSaveOrcamento={saveOrcamento}
+            onDeleteOrcamento={deleteOrcamento}
+          />
+        );
+
       default:
-        console.warn(`dbSave: coleção desconhecida "${collectionName}" (local).`);
+        return (
+          <Dashboard
+            viewMode={viewMode === "GLOBAL" ? "PT" : viewMode}
+            transacoes={txs}
+            orcamentos={orcs}
+            categorias={cats}
+            investments={inv}
+          />
+        );
     }
-  };
+  }, [activePage, viewMode, transacoes, categorias, orcamentos, investments, receipts, storageMode]);
 
-  const dbDelete = async (collectionName: string, id: string) => {
-    if (!id) return;
-
-    const applyDelete = (setter: React.Dispatch<React.SetStateAction<any[]>>) => {
-      setter((prev) => prev.filter((x: any) => x.id !== id));
-    };
-
-    // 1) CLOUD MODE
-    if (storageMode === "cloud") {
-      const cloudCollection = CLOUD_MAP[collectionName];
-      if (!cloudCollection) {
-        console.warn(`Coleção "${collectionName}" não mapeada para nuvem. Removendo apenas local.`);
-      } else {
-        try {
-          await deleteDocById(cloudCollection, id);
-        } catch (err) {
-          console.error(`Falha ao remover na nuvem (${cloudCollection}). Mantendo UI sem persistir:`, err);
-          return;
-        }
-      }
-
-      switch (collectionName) {
-        case "categorias": applyDelete(setCategorias); break;
-        case "formasPagamento": applyDelete(setFormasPagamento); break;
-        case "fornecedores": applyDelete(setFornecedores); break;
-        case "orcamentos": applyDelete(setOrcamentos); break;
-        case "inssConfigs": applyDelete(setInssConfigs); break;
-        case "inssRecords": applyDelete(setInssRecords); break;
-        case "transacoes": applyDelete(setTransacoes); break;
-        case "receipts": applyDelete(setReceipts); break;
-        case "investments": applyDelete(setInvestments); break;
-        default:
-          console.warn(`dbDelete: coleção desconhecida "${collectionName}" (cloud).`);
-      }
-      return;
-    }
-
-    // 2) LOCAL MODE
-    switch (collectionName) {
-      case "categorias": applyDelete(setCategorias); break;
-      case "formasPagamento": applyDelete(setFormasPagamento); break;
-      case "fornecedores": applyDelete(setFornecedores); break;
-      case "orcamentos": applyDelete(setOrcamentos); break;
-      case "inssConfigs": applyDelete(setInssConfigs); break;
-      case "inssRecords": applyDelete(setInssRecords); break;
-      case "transacoes": applyDelete(setTransacoes); break;
-      case "receipts": applyDelete(setReceipts); break;
-      case "investments": applyDelete(setInvestments); break;
-      default:
-        console.warn(`dbDelete: coleção desconhecida "${collectionName}" (local).`);
-    }
-  };
-
-  const handleLogin = async () => {
-    await signInWithGoogle();
-  };
-
-  const handleLogout = async () => {
-    await signOutUser();
-  };
-
-  const renderPage = () => {
-    if (activePage === "dashboard") {
-      return <Dashboard transacoes={transacoes} categorias={categorias} />;
-    }
-    if (activePage === "ledger") {
-      return (
-        <Ledger
-          transacoes={transacoes}
-          categorias={categorias}
-          formasPagamento={formasPagamento}
-          fornecedores={fornecedores}
-          onSave={(t: Transacao) => dbSave("transacoes", t)}
-          onDelete={(id: string) => dbDelete("transacoes", id)}
-        />
-      );
-    }
-    if (activePage === "receipts") {
-      return (
-        <Receipts
-          receipts={receipts}
-          fornecedores={fornecedores}
-          onSave={(r: Receipt) => dbSave("receipts", r)}
-          onDelete={(id: string) => dbDelete("receipts", id)}
-        />
-      );
-    }
-    if (activePage === "import") {
-      return <ImportSection />;
-    }
-    if (activePage === "calendar") {
-      return <Calendar transacoes={transacoes} />;
-    }
-    if (activePage === "settings") {
-      return (
-        <Settings
-          storageMode={storageMode}
-          categorias={categorias}
-          formasPagamento={formasPagamento}
-          fornecedores={fornecedores}
-          orcamentos={orcamentos}
-          onSaveCategoria={(c: Categoria) => dbSave("categorias", c)}
-          onDeleteCategoria={(id: string) => dbDelete("categorias", id)}
-          onSaveFormaPagamento={(fp: FormaPagamento) => dbSave("formasPagamento", fp)}
-          onDeleteFormaPagamento={(id: string) => dbDelete("formasPagamento", id)}
-          onSaveFornecedor={(f: Fornecedor) => dbSave("fornecedores", f)}
-          onDeleteFornecedor={(id: string) => dbDelete("fornecedores", id)}
-        />
-      );
-    }
-    if (activePage === "investments") {
-      return (
-        <Investments
-          investments={investments}
-          onSave={(i: Investment) => dbSave("investments", i)}
-          onDelete={(id: string) => dbDelete("investments", id)}
-        />
-      );
-    }
-    if (activePage === "tax") {
-      return <TaxReports transacoes={transacoes} />;
-    }
-    if (activePage === "inss") {
-      return (
-        <InssBrasil
-          configs={inssConfigs}
-          records={inssRecords}
-          onSaveConfig={(c: InssConfig) => dbSave("inssConfigs", c)}
-          onDeleteConfig={(id: string) => dbDelete("inssConfigs", id)}
-          onSaveRecord={(r: InssRecord) => dbSave("inssRecords", r)}
-          onDeleteRecord={(id: string) => dbDelete("inssRecords", id)}
-        />
-      );
-    }
-
-    return <Dashboard transacoes={transacoes} categorias={categorias} />;
-  };
-
+  // --- UI ---
   return (
     <div className="app-shell">
-      <Sidebar activePage={activePage} onNavigate={setActivePage} />
+      <Header
+        user={user}
+        storageMode={storageMode}
+      />
 
-      <div className="app-main">
-        <Header
-          user={user}
-          storageMode={storageMode}
-          onLogin={handleLogin}
-          onLogout={handleLogout}
-        />
+      <div className="app-body">
+        <Sidebar active={activePage} onNavigate={setActivePage} />
 
-        <div className="app-content">{renderPage()}</div>
+        <main className="app-main">
+          {!authChecked ? (
+            <div style={{ padding: 24 }}>Carregando autenticação...</div>
+          ) : (
+            page
+          )}
+        </main>
       </div>
     </div>
   );
