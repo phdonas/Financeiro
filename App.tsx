@@ -1,546 +1,282 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { onAuthStateChanged, User } from "firebase/auth";
-
-import { auth } from "./lib/firebase";
-import { signInWithGoogle, signOutUser } from "./lib/auth";
-import { getStorageMode, listDocs, upsertDoc, deleteDocById } from "./lib/cloudStore";
-
 import Sidebar from "./components/Sidebar";
-import Header from "./components/Header";
+
 import Dashboard from "./components/Dashboard";
+import AIAdvisor from "./components/AIAdvisor";
 import Ledger from "./components/Ledger";
 import Calendar from "./components/Calendar";
-import AIAdvisor from "./components/AIAdvisor";
-import InssBrasil from "./components/InssBrasil";
-import Receipts from "./components/Receipts";
 import Investments from "./components/Investments";
 import TaxReports from "./components/TaxReports";
-import ImportSection from "./components/ImportData";
 import Settings from "./components/Settings";
 
-type ViewMode = "BR" | "PT" | "GLOBAL";
-type StorageMode = "local" | "cloud";
+import { auth, googleProvider } from "./lib/firebase";
+import { onAuthStateChanged, signInWithPopup, signOut, User } from "firebase/auth";
 
-// ---- Local storage ----
-const STORAGE_KEY = "PHD_FINANCEIRO_DATA_V1";
+import {
+  DEFAULT_HOUSEHOLD_ID,
+  getStorageMode,
+  listDocs,
+  upsertDoc,
+  deleteDocById
+} from "./lib/cloudStore";
 
-type WithId = { id: string; [k: string]: any };
-
-type LocalState = {
-  version: 1;
-  viewMode: ViewMode;
-  baseCurrency: string;
-  storageMode: StorageMode;
-
-  categorias: WithId[];
-  formasPagamento: WithId[];
-  fornecedores: WithId[];
-  orcamentos: WithId[];
-
-  transacoes: WithId[];
-  receipts: WithId[];
-  investments: WithId[];
-
-  inssConfigs: WithId[];
-  inssRecords: WithId[];
-
-  updatedAt: string;
-};
-
-// ErrorBoundary simples para não ficar “tela branca” se algum componente falhar
-class ErrorBoundary extends React.Component<
-  { children: React.ReactNode },
-  { hasError: boolean; message?: string }
-> {
-  constructor(props: any) {
-    super(props);
-    this.state = { hasError: false, message: "" };
-  }
-  static getDerivedStateFromError(err: any) {
-    return { hasError: true, message: err?.message || String(err) };
-  }
-  componentDidCatch(err: any) {
-    console.error("UI crashed:", err);
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="p-6">
-          <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm">
-            <div className="font-bold text-red-800 mb-2">Erro na interface</div>
-            <div className="text-red-700 whitespace-pre-wrap">
-              {this.state.message}
-            </div>
-            <div className="text-red-700 mt-3">
-              Se isso aparecer, o app não fica mais “em branco”: você enxerga o erro.
-            </div>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
+// ---- helpers localStorage (fallback) ----
+function lsGet<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
   }
 }
+function lsSet<T>(key: string, value: T) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore
+  }
+}
+
+type StorageMode = "local" | "cloud";
+
+// Keys local (se cair em modo local)
+const LS_KEYS = {
+  categorias: "ff_categorias",
+  formasPagamento: "ff_formas_pagamento",
+  orcamentos: "ff_orcamentos",
+  fornecedores: "ff_fornecedores",
+  inss: "ff_inss_configs",
+  transacoes: "ff_transacoes",
+  investments: "ff_investments"
+};
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
 
-  const [activePage, setActivePage] = useState<string>("dashboard");
-  const [viewMode, setViewMode] = useState<ViewMode>("BR");
-  const [baseCurrency, setBaseCurrency] = useState<string>("EUR");
-
+  const [activeTab, setActiveTab] = useState<string>("dashboard");
   const [storageMode, setStorageMode] = useState<StorageMode>("local");
-  const [cloudError, setCloudError] = useState<string>("");
+  const householdId = DEFAULT_HOUSEHOLD_ID;
 
-  // Dados
-  const [categorias, setCategorias] = useState<WithId[]>([]);
-  const [formasPagamento, setFormasPagamento] = useState<WithId[]>([]);
-  const [fornecedores, setFornecedores] = useState<WithId[]>([]);
-  const [orcamentos, setOrcamentos] = useState<WithId[]>([]);
+  // Dados principais (mantidos como any[] para não travar build por tipagem)
+  const [categorias, setCategorias] = useState<any[]>([]);
+  const [formasPagamento, setFormasPagamento] = useState<any[]>([]);
+  const [orcamentos, setOrcamentos] = useState<any[]>([]);
+  const [fornecedores, setFornecedores] = useState<any[]>([]);
+  const [inssConfigs, setInssConfigs] = useState<any[]>([]);
+  const [transacoes, setTransacoes] = useState<any[]>([]);
+  const [investments, setInvestments] = useState<any[]>([]);
 
-  const [transacoes, setTransacoes] = useState<WithId[]>([]);
-  const [receipts, setReceipts] = useState<WithId[]>([]);
-  const [investments, setInvestments] = useState<WithId[]>([]);
-
-  const [inssConfigs, setInssConfigs] = useState<WithId[]>([]);
-  const [inssRecords, setInssRecords] = useState<WithId[]>([]);
-
-  // ---- Helpers: local load/save ----
-  const loadLocal = () => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-
-      const s = JSON.parse(raw) as Partial<LocalState>;
-
-      setViewMode((s.viewMode as ViewMode) || "BR");
-      setBaseCurrency((s.baseCurrency as string) || "EUR");
-      setStorageMode((s.storageMode as StorageMode) || "local");
-
-      setCategorias(Array.isArray(s.categorias) ? s.categorias : []);
-      setFormasPagamento(Array.isArray(s.formasPagamento) ? s.formasPagamento : []);
-      setFornecedores(Array.isArray(s.fornecedores) ? s.fornecedores : []);
-      setOrcamentos(Array.isArray(s.orcamentos) ? s.orcamentos : []);
-
-      setTransacoes(Array.isArray(s.transacoes) ? s.transacoes : []);
-      setReceipts(Array.isArray(s.receipts) ? s.receipts : []);
-      setInvestments(Array.isArray(s.investments) ? s.investments : []);
-
-      setInssConfigs(Array.isArray(s.inssConfigs) ? s.inssConfigs : []);
-      setInssRecords(Array.isArray(s.inssRecords) ? s.inssRecords : []);
-    } catch (e: any) {
-      console.error("Falha ao carregar localStorage:", e);
-    }
-  };
-
-  const persistLocal = () => {
-    try {
-      const payload: LocalState = {
-        version: 1,
-        viewMode,
-        baseCurrency,
-        storageMode,
-
-        categorias,
-        formasPagamento,
-        fornecedores,
-        orcamentos,
-
-        transacoes,
-        receipts,
-        investments,
-
-        inssConfigs,
-        inssRecords,
-
-        updatedAt: new Date().toISOString(),
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch (e: any) {
-      console.error("Falha ao salvar localStorage:", e);
-    }
-  };
-
-  // 1) Auth
+  // -------- AUTH ----------
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setAuthReady(true);
+    });
     return () => unsub();
   }, []);
 
-  // 2) Carrega Local ao iniciar (para não abrir vazio)
-  useEffect(() => {
-    loadLocal();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  async function handleLogin() {
+    await signInWithPopup(auth, googleProvider);
+  }
 
-  // 3) Decide storageMode (cloud/local) com base no Firestore
+  async function handleLogout() {
+    await signOut(auth);
+  }
+
+  // -------- StorageMode (cloud/local) ----------
   useEffect(() => {
-    let alive = true;
+    if (!authReady) return;
+
+    // Se não tiver user, nem tenta cloud.
+    if (!user) {
+      setStorageMode("local");
+      return;
+    }
 
     (async () => {
-      setCloudError("");
-
-      // sem user => fica local
-      if (!user) {
-        if (!alive) return;
-        setStorageMode("local");
-        return;
-      }
-
       try {
-        const mode = await getStorageMode();
-        if (!alive) return;
+        const mode = await getStorageMode(householdId);
         setStorageMode(mode);
-      } catch (e: any) {
-        console.error("Falha ao ler storageMode do Firestore:", e);
-        if (!alive) return;
+      } catch (e) {
+        console.error("Falha ao ler storageMode (assumindo local):", e);
         setStorageMode("local");
-        setCloudError(e?.message || String(e));
       }
     })();
+  }, [authReady, user, householdId]);
 
-    return () => {
-      alive = false;
-    };
-  }, [user]);
-
-  // 4) Se cloud: carrega coleções do Firestore (todas com fallback seguro)
+  // -------- Load data (cloud ou local) ----------
   useEffect(() => {
-    let alive = true;
+    if (!authReady) return;
 
+    // Local: carrega do localStorage sempre
+    if (storageMode === "local" || !user) {
+      setCategorias(lsGet(LS_KEYS.categorias, []));
+      setFormasPagamento(lsGet(LS_KEYS.formasPagamento, []));
+      setOrcamentos(lsGet(LS_KEYS.orcamentos, []));
+      setFornecedores(lsGet(LS_KEYS.fornecedores, []));
+      setInssConfigs(lsGet(LS_KEYS.inss, []));
+      setTransacoes(lsGet(LS_KEYS.transacoes, []));
+      setInvestments(lsGet(LS_KEYS.investments, []));
+      return;
+    }
+
+    // Cloud: busca do Firestore
     (async () => {
-      if (storageMode !== "cloud" || !user) return;
-
       try {
         const [
-          _categorias,
-          _formas,
-          _fornecedores,
-          _orcamentos,
-          _transacoes,
-          _receipts,
-          _investments,
-          _inssConfigs,
-          _inssRecords,
+          cats,
+          fps,
+          orcs,
+          sups,
+          inss,
+          trans,
+          invs
         ] = await Promise.all([
-          listDocs<WithId>("categorias"),
-          listDocs<WithId>("formasPagamento"),
-          listDocs<WithId>("fornecedores"),
-          listDocs<WithId>("orcamentos"),
-          listDocs<WithId>("transacoes"),
-          listDocs<WithId>("receipts"),
-          listDocs<WithId>("investments"),
-          listDocs<WithId>("inssConfigs"),
-          listDocs<WithId>("inssRecords"),
+          listDocs<any>("categorias", householdId),
+          listDocs<any>("formas_pagamento", householdId),
+          listDocs<any>("orcamentos", householdId),
+          listDocs<any>("fornecedores", householdId),
+          listDocs<any>("inss_configs", householdId),
+          listDocs<any>("transacoes", householdId),
+          listDocs<any>("investments", householdId)
         ]);
 
-        if (!alive) return;
-
-        setCategorias(Array.isArray(_categorias) ? _categorias : []);
-        setFormasPagamento(Array.isArray(_formas) ? _formas : []);
-        setFornecedores(Array.isArray(_fornecedores) ? _fornecedores : []);
-        setOrcamentos(Array.isArray(_orcamentos) ? _orcamentos : []);
-
-        setTransacoes(Array.isArray(_transacoes) ? _transacoes : []);
-        setReceipts(Array.isArray(_receipts) ? _receipts : []);
-        setInvestments(Array.isArray(_investments) ? _investments : []);
-
-        setInssConfigs(Array.isArray(_inssConfigs) ? _inssConfigs : []);
-        setInssRecords(Array.isArray(_inssRecords) ? _inssRecords : []);
-      } catch (e: any) {
-        console.error("Falha ao carregar dados do Firestore:", e);
-        setCloudError(e?.message || String(e));
+        setCategorias(cats);
+        setFormasPagamento(fps);
+        setOrcamentos(orcs);
+        setFornecedores(sups);
+        setInssConfigs(inss);
+        setTransacoes(trans);
+        setInvestments(invs);
+      } catch (e) {
+        console.error("Falha ao carregar dados cloud (caindo para local):", e);
+        setStorageMode("local");
       }
     })();
+  }, [authReady, storageMode, user, householdId]);
 
-    return () => {
-      alive = false;
-    };
-  }, [storageMode, user]);
-
-  // 5) Persistência local contínua (mesmo em cloud, mantém cache)
-  useEffect(() => {
-    persistLocal();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    viewMode,
-    baseCurrency,
-    storageMode,
-    categorias,
-    formasPagamento,
-    fornecedores,
-    orcamentos,
-    transacoes,
-    receipts,
-    investments,
-    inssConfigs,
-    inssRecords,
-  ]);
-
-  // ---- CRUD genérico ----
-  const upsertLocal = (arr: WithId[], item: WithId) => {
-    const idx = arr.findIndex((x) => x.id === item.id);
-    if (idx >= 0) {
-      const next = [...arr];
-      next[idx] = { ...next[idx], ...item };
-      return next;
+  // -------- CRUD helpers (cloud/local) ----------
+  async function saveItem(collectionName: string, item: any, setter: (fn: any) => void, lsKey: string) {
+    if (storageMode === "cloud" && user) {
+      await upsertDoc(collectionName, item, householdId);
+      // reload simples (evita bugs de estado)
+      const fresh = await listDocs<any>(collectionName, householdId);
+      setter(fresh);
+      return;
     }
-    return [...arr, item];
-  };
 
-  const addOrUpdateItem =
-    (collectionName: string) =>
-    async (item: WithId) => {
-      if (!item?.id) {
-        throw new Error(`Item sem "id" em ${collectionName}`);
+    // local
+    const current = lsGet<any[]>(lsKey, []);
+    const next = (() => {
+      const idx = current.findIndex((x) => x.id === item.id);
+      if (idx >= 0) {
+        const copy = [...current];
+        copy[idx] = { ...copy[idx], ...item };
+        return copy;
       }
+      return [...current, item];
+    })();
+    lsSet(lsKey, next);
+    setter(next);
+  }
 
-      // atualiza estado local (UI instantânea)
-      const apply = (setter: React.Dispatch<React.SetStateAction<WithId[]>>) => {
-        setter((prev) => upsertLocal(prev, item));
-      };
-
-      switch (collectionName) {
-        case "categorias":
-          apply(setCategorias);
-          break;
-        case "formasPagamento":
-          apply(setFormasPagamento);
-          break;
-        case "fornecedores":
-          apply(setFornecedores);
-          break;
-        case "orcamentos":
-          apply(setOrcamentos);
-          break;
-        case "transacoes":
-          apply(setTransacoes);
-          break;
-        case "receipts":
-          apply(setReceipts);
-          break;
-        case "investments":
-          apply(setInvestments);
-          break;
-        case "inssConfigs":
-          apply(setInssConfigs);
-          break;
-        case "inssRecords":
-          apply(setInssRecords);
-          break;
-        default:
-          console.warn("Coleção não mapeada:", collectionName);
-      }
-
-      // se cloud, grava no Firestore também
-      if (storageMode === "cloud" && user) {
-        await upsertDoc(collectionName, item);
-      }
-    };
-
-  const deleteItem =
-    (collectionName: string) =>
-    async (id: string) => {
-      const apply = (setter: React.Dispatch<React.SetStateAction<WithId[]>>) => {
-        setter((prev) => prev.filter((x) => x.id !== id));
-      };
-
-      switch (collectionName) {
-        case "categorias":
-          apply(setCategorias);
-          break;
-        case "formasPagamento":
-          apply(setFormasPagamento);
-          break;
-        case "fornecedores":
-          apply(setFornecedores);
-          break;
-        case "orcamentos":
-          apply(setOrcamentos);
-          break;
-        case "transacoes":
-          apply(setTransacoes);
-          break;
-        case "receipts":
-          apply(setReceipts);
-          break;
-        case "investments":
-          apply(setInvestments);
-          break;
-        case "inssConfigs":
-          apply(setInssConfigs);
-          break;
-        case "inssRecords":
-          apply(setInssRecords);
-          break;
-        default:
-          console.warn("Coleção não mapeada:", collectionName);
-      }
-
-      if (storageMode === "cloud" && user) {
-        await deleteDocById(collectionName, id);
-      }
-    };
-
-  // ---- Login/Logout ----
-  const onLogin = async () => {
-    await signInWithGoogle();
-  };
-  const onLogout = async () => {
-    await signOutUser();
-  };
-
-  // ---- UI labels ----
-  const userLabel = useMemo(() => {
-    if (!user) return "Usuário Local";
-    return (user.displayName || user.email || "Usuário").slice(0, 22);
-  }, [user]);
-
-  const modeLabel = useMemo(() => {
-    if (storageMode === "cloud") return "Modo Cloud";
-    return "Modo Offline";
-  }, [storageMode]);
-
-  // ---- Render page ----
-  const renderPage = () => {
-    if (activePage === "dashboard") {
-      return (
-        <Dashboard
-          transacoes={transacoes}
-          orcamentos={orcamentos}
-          viewMode={viewMode}
-          investimentos={investments}
-        />
-      );
+  async function deleteItem(collectionName: string, id: string, setter: (v: any) => void, lsKey: string) {
+    if (storageMode === "cloud" && user) {
+      await deleteDocById(collectionName, id, householdId);
+      const fresh = await listDocs<any>(collectionName, householdId);
+      setter(fresh);
+      return;
     }
 
-    if (activePage === "ai_advisor") {
-      return <AIAdvisor transacoes={transacoes} investimentos={investments} />;
-    }
+    const current = lsGet<any[]>(lsKey, []);
+    const next = current.filter((x) => x.id !== id);
+    lsSet(lsKey, next);
+    setter(next);
+  }
 
-    if (activePage === "ledger") {
-      return (
-        <Ledger
-          transacoes={transacoes}
-          categorias={categorias}
-          formasPagamento={formasPagamento}
-          fornecedores={fornecedores}
-          viewMode={viewMode}
-          onSave={addOrUpdateItem("transacoes")}
-          onDelete={deleteItem("transacoes")}
-        />
-      );
-    }
+  const isCloud = storageMode === "cloud" && !!user;
 
-    if (activePage === "calendar") {
-      return (
-        <Calendar
-          viewMode={viewMode}
-          transacoes={transacoes}
-          categorias={categorias}
-        />
-      );
-    }
-
-    if (activePage === "inss") {
-      return (
-        <InssBrasil
-          configs={inssConfigs}
-          records={inssRecords}
-          onSaveConfig={addOrUpdateItem("inssConfigs")}
-          onDeleteConfig={deleteItem("inssConfigs")}
-          onSaveRecord={addOrUpdateItem("inssRecords")}
-          onDeleteRecord={deleteItem("inssRecords")}
-        />
-      );
-    }
-
-    if (activePage === "receipts") {
-      return (
-        <Receipts
-          recibos={receipts}
-          addOrUpdateRecibo={addOrUpdateItem("receipts")}
-          deleteRecibo={deleteItem("receipts")}
-        />
-      );
-    }
-
-    if (activePage === "investments") {
-      return (
-        <Investments
-          investments={investments}
-          onSaveInvestment={addOrUpdateItem("investments")}
-          onDeleteInvestment={deleteItem("investments")}
-          viewMode={viewMode}
-        />
-      );
-    }
-
-    if (activePage === "taxes") {
-      return <TaxReports transacoes={transacoes} viewMode={viewMode} />;
-    }
-
-    if (activePage === "import") {
-      return (
-        <ImportSection
-          onImportTransacoes={async (items: WithId[]) => {
-            for (const it of items) await addOrUpdateItem("transacoes")(it);
-          }}
-        />
-      );
-    }
-
-    if (activePage === "settings") {
-      return (
-        <Settings
-          viewMode={viewMode}
-          baseCurrency={baseCurrency}
-          storageMode={storageMode}
-          user={user}
-          categorias={categorias}
-          formasPagamento={formasPagamento}
-          fornecedores={fornecedores}
-          onSetViewMode={(m: ViewMode) => setViewMode(m)}
-          onSetBaseCurrency={(c: string) => setBaseCurrency(c)}
-          onSetStorageMode={(m: StorageMode) => setStorageMode(m)}
-          onSaveCategoria={addOrUpdateItem("categorias")}
-          onDeleteCategoria={deleteItem("categorias")}
-          onSaveFormaPagamento={addOrUpdateItem("formasPagamento")}
-          onDeleteFormaPagamento={deleteItem("formasPagamento")}
-          onSaveFornecedor={addOrUpdateItem("fornecedores")}
-          onDeleteFornecedor={deleteItem("fornecedores")}
-        />
-      );
-    }
-
-    return (
-      <div className="p-6 text-sm text-slate-600">
-        Selecione uma opção no menu.
-      </div>
-    );
-  };
-
-  return (
-    <div className="min-h-screen flex bg-white">
-      <Sidebar activePage={activePage} onNavigate={setActivePage} userLabel={userLabel} modeLabel={modeLabel} />
-
-      <div className="flex-1 min-w-0 flex flex-col">
-        <Header user={user} storageMode={storageMode} onLogin={onLogin} onLogout={onLogout} />
-
-        {cloudError ? (
-          <div className="mx-6 mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-            <div className="font-bold mb-1">Aviso: Cloud indisponível (caiu para local)</div>
-            <div className="whitespace-pre-wrap">{cloudError}</div>
-            <div className="mt-2">
-              Se isso persistir, o problema é regra/permissão do Firestore ou member doc.
-            </div>
+  const content = useMemo(() => {
+    switch (activeTab) {
+      case "dashboard":
+        return <Dashboard transacoes={transacoes} investments={investments} categorias={categorias} />;
+      case "ai_advisor":
+        return <AIAdvisor transacoes={transacoes} investments={investments} />;
+      case "ledger":
+        return <Ledger transacoes={transacoes} categorias={categorias} formasPagamento={formasPagamento} />;
+      case "calendar":
+        return <Calendar transacoes={transacoes} categorias={categorias} />;
+      case "investments":
+        return <Investments investments={investments} />;
+      case "taxes":
+        return <TaxReports transacoes={transacoes} />;
+      case "settings":
+        return (
+          <Settings
+            categorias={categorias}
+            onSaveCat={(c) => saveItem("categorias", c, setCategorias, LS_KEYS.categorias)}
+            onDeleteCat={(id) => deleteItem("categorias", id, setCategorias, LS_KEYS.categorias)}
+            formasPagamento={formasPagamento}
+            onSaveFP={(f) => saveItem("formas_pagamento", f, setFormasPagamento, LS_KEYS.formasPagamento)}
+            onDeleteFP={(id) => deleteItem("formas_pagamento", id, setFormasPagamento, LS_KEYS.formasPagamento)}
+            orcamentos={orcamentos}
+            onSaveOrc={(o) => saveItem("orcamentos", o, setOrcamentos, LS_KEYS.orcamentos)}
+            onDeleteOrc={(id) => deleteItem("orcamentos", id, setOrcamentos, LS_KEYS.orcamentos)}
+            fornecedores={fornecedores}
+            onSaveSup={(s) => saveItem("fornecedores", s, setFornecedores, LS_KEYS.fornecedores)}
+            onDeleteSup={(id) => deleteItem("fornecedores", id, setFornecedores, LS_KEYS.fornecedores)}
+            inssConfigs={inssConfigs}
+            onSaveInss={(i) => saveItem("inss_configs", i, setInssConfigs, LS_KEYS.inss)}
+            onDeleteInss={(ano) => deleteItem("inss_configs", ano, setInssConfigs, LS_KEYS.inss)}
+          />
+        );
+      default:
+        return (
+          <div className="p-8">
+            <h2 className="text-xl font-black">Tela ainda não implementada</h2>
+            <p className="text-sm text-gray-500 mt-2">Aba: {activeTab}</p>
           </div>
-        ) : null}
+        );
+    }
+  }, [activeTab, transacoes, investments, categorias, formasPagamento, orcamentos, fornecedores, inssConfigs, isCloud]);
 
-        <div className="flex-1 overflow-y-auto">
-          <ErrorBoundary>{renderPage()}</ErrorBoundary>
+  // ---------- UI ----------
+  if (!authReady) {
+    return <div className="p-8 text-sm text-gray-600">Carregando…</div>;
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-8">
+        <div className="max-w-sm w-full bg-white rounded-2xl border shadow p-6 space-y-4">
+          <h1 className="text-xl font-black text-bb-blue">FinanceFamily</h1>
+          <p className="text-sm text-gray-600">
+            Faça login para usar a nuvem (Firestore). Sem login, o app opera em modo local.
+          </p>
+          <button
+            onClick={handleLogin}
+            className="w-full bg-bb-blue text-white py-3 rounded-xl text-sm font-black"
+          >
+            Entrar com Google
+          </button>
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex bg-gray-50">
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+
+      <div className="flex-1 min-w-0">
+        <div className="px-6 py-4 border-b bg-white flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span
+              className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${
+                isCloud ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"
+              }`}
+            >
+              {isCloud ? "NUVEM ATIVA" : "MODO LOCAL ATIVO"}
+            </span>
+            <
