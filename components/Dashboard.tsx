@@ -1,142 +1,110 @@
 import React, { useMemo } from "react";
-import { Transacao, Categoria, Orcamento, InvestmentAsset } from "../types";
+import type { Categoria, Orcamento, Transacao, Investment } from "../types";
 
-interface DashboardProps {
-  viewMode: "PT" | "BR";
-  transacoes: Transacao[];
-  orcamentos: Orcamento[];
-  categorias: Categoria[];
-  investments: InvestmentAsset[];
-}
-
-function isDespesa(t: Transacao) {
-  const tipo = String((t as any)?.tipo || "").toUpperCase();
-  return tipo === "DESPESA";
-}
-
-function isReceita(t: Transacao) {
-  const tipo = String((t as any)?.tipo || "").toUpperCase();
-  return tipo === "RECEITA";
-}
-
-const toNumber = (v: unknown): number => {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
+export type DashboardProps = {
+  transacoes?: Transacao[];
+  categorias?: Categoria[];
+  orcamentos?: Orcamento[];
+  investments?: Investment[];
+  viewMode: "local" | "cloud";
 };
 
+function formatMoney(v: number, currency: string = "EUR") {
+  try {
+    return new Intl.NumberFormat("pt-PT", {
+      style: "currency",
+      currency
+    }).format(v || 0);
+  } catch {
+    return `${v || 0}`;
+  }
+}
+
+function getVal(valor: number, codigo_pais?: string) {
+  // Aqui você pode fazer conversão real depois.
+  // Por enquanto, retornamos o valor “como está”.
+  return Number(valor || 0);
+}
+
 export default function Dashboard({
-  viewMode,
-  transacoes,
-  orcamentos,
-  categorias,
-  investments
+  transacoes = [],
+  categorias = [],
+  orcamentos = [],
+  investments = [],
+  viewMode
 }: DashboardProps) {
   const safeTransacoes = Array.isArray(transacoes) ? transacoes : [];
-  const safeOrcamentos = Array.isArray(orcamentos) ? orcamentos : [];
-  const safeCategorias = Array.isArray(categorias) ? categorias : [];
   const safeInvestments = Array.isArray(investments) ? investments : [];
 
-  const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const summary = useMemo(() => {
+    const saldoLedger = safeTransacoes.reduce((acc, t) => acc + getVal(t.valor, t.codigo_pais), 0);
 
-  const resumo = useMemo(() => {
-    const txMonth = safeTransacoes.filter((t) => (t?.data || "").slice(0, 7) === currentMonth);
+    const capitalInvestido = safeInvestments.reduce(
+      (acc, a) => acc + getVal(a.current_value, a.country_code),
+      0
+    );
 
-    const receitas = txMonth
-      .filter(isReceita)
-      .reduce((acc, t) => acc + toNumber((t as any)?.valor), 0);
+    return {
+      saldoLedger,
+      capitalInvestido
+    };
+  }, [safeTransacoes, safeInvestments]);
 
-    const despesas = txMonth
-      .filter(isDespesa)
-      .reduce((acc, t) => acc + toNumber((t as any)?.valor), 0);
+  const categoriasResumo = useMemo(() => {
+    // Exemplo: total por categoria
+    const map: Record<string, number> = {};
 
-    const saldoMes = receitas - despesas;
-
-    const orcMes = safeOrcamentos
-      .filter((o) => o?.mes === currentMonth)
-      .reduce((acc, o) => acc + toNumber((o as any)?.valor), 0);
-
-    const totalInvest = safeInvestments
-      .filter((a) => a?.country_code === viewMode)
-      .reduce((acc, a) => acc + toNumber((a as any)?.current_value), 0);
-
-    return { receitas, despesas, saldoMes, orcMes, totalInvest };
-  }, [safeTransacoes, safeOrcamentos, safeInvestments, currentMonth, viewMode]);
-
-  const byCategoria = useMemo(() => {
-    const txMonth = safeTransacoes.filter((t) => (t?.data || "").slice(0, 7) === currentMonth);
-    const despesas = txMonth.filter(isDespesa);
-
-    const map = new Map<string, number>();
-    for (const t of despesas) {
-      const catId = (t as any)?.categoriaId || "sem-categoria";
-      map.set(catId, (map.get(catId) || 0) + toNumber((t as any)?.valor));
+    for (const t of safeTransacoes) {
+      const cat = (t.categoria_id || "sem_categoria").toString();
+      map[cat] = (map[cat] || 0) + getVal(t.valor, t.codigo_pais);
     }
 
-    return Array.from(map.entries())
-      .map(([categoriaId, total]) => {
-        const cat = safeCategorias.find((c) => c.id === categoriaId);
-        return { categoriaId, nome: cat?.nome || "Sem categoria", total };
-      })
-      .sort((a, b) => b.total - a.total);
-  }, [safeTransacoes, safeCategorias, currentMonth]);
+    return Object.entries(map).map(([categoria_id, total]) => {
+      const cat = categorias.find((c) => c.id === categoria_id);
+      return {
+        categoria_id,
+        categoria_nome: cat?.nome || categoria_id,
+        total
+      };
+    });
+  }, [safeTransacoes, categorias]);
 
   return (
-    <div style={{ padding: 16 }}>
-      <h2 style={{ marginBottom: 8 }}>Painel Geral ({viewMode})</h2>
-
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, minmax(180px, 1fr))",
-          gap: 12,
-          marginBottom: 16
-        }}
-      >
-        <div className="card">
-          <div className="card-title">Receitas (mês)</div>
-          <div className="card-value">{resumo.receitas.toFixed(2)}</div>
-        </div>
-        <div className="card">
-          <div className="card-title">Despesas (mês)</div>
-          <div className="card-value">{resumo.despesas.toFixed(2)}</div>
-        </div>
-        <div className="card">
-          <div className="card-title">Saldo (mês)</div>
-          <div className="card-value">{resumo.saldoMes.toFixed(2)}</div>
-        </div>
-        <div className="card">
-          <div className="card-title">Investimentos</div>
-          <div className="card-value">{resumo.totalInvest.toFixed(2)}</div>
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-2xl font-bold">Painel Geral</h1>
+        <div className="text-xs px-3 py-1 rounded-full bg-white border">
+          {viewMode === "cloud" ? "Nuvem ativa" : "Modo local ativo"}
         </div>
       </div>
 
-      <div className="card" style={{ padding: 12 }}>
-        <h3 style={{ marginTop: 0 }}>Despesas por categoria (mês)</h3>
-        {byCategoria.length === 0 ? (
-          <div style={{ opacity: 0.7 }}>Sem despesas neste mês.</div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div className="bg-white border rounded-xl p-4">
+          <div className="text-sm opacity-70 mb-1">Saldo (lançamentos)</div>
+          <div className="text-2xl font-bold">{formatMoney(summary.saldoLedger)}</div>
+        </div>
+
+        <div className="bg-white border rounded-xl p-4">
+          <div className="text-sm opacity-70 mb-1">Capital investido</div>
+          <div className="text-2xl font-bold">{formatMoney(summary.capitalInvestido)}</div>
+        </div>
+      </div>
+
+      <div className="bg-white border rounded-xl p-4">
+        <h2 className="text-lg font-semibold mb-3">Totais por categoria</h2>
+
+        {categoriasResumo.length === 0 ? (
+          <div className="text-sm opacity-70">Sem dados para exibir.</div>
         ) : (
-          <div style={{ display: "grid", gap: 8 }}>
-            {byCategoria.slice(0, 10).map((row) => (
-              <div
-                key={row.categoriaId}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  borderBottom: "1px solid rgba(0,0,0,0.08)",
-                  paddingBottom: 6
-                }}
-              >
-                <div>{row.nome}</div>
-                <div>{row.total.toFixed(2)}</div>
+          <div className="space-y-2">
+            {categoriasResumo.map((row) => (
+              <div key={row.categoria_id} className="flex items-center justify-between">
+                <div className="text-sm">{row.categoria_nome}</div>
+                <div className="text-sm font-medium">{formatMoney(row.total)}</div>
               </div>
             ))}
           </div>
         )}
-
-        <div style={{ marginTop: 12, opacity: 0.8 }}>
-          Orçamento total do mês: <strong>{resumo.orcMes.toFixed(2)}</strong>
-        </div>
       </div>
     </div>
   );
