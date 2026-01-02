@@ -20,7 +20,6 @@ import {
   DEFAULT_HOUSEHOLD_ID
 } from "./lib/cloudStore";
 
-import "./App.css";
 
 // ✅ tipos (mantendo seu padrão atual)
 type ViewMode = "PT" | "BR" | "GLOBAL";
