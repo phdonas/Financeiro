@@ -21,7 +21,9 @@ function householdPath(householdId: string = DEFAULT_HOUSEHOLD_ID) {
   return `households/${householdId}`;
 }
 
-export async function getStorageMode(householdId: string = DEFAULT_HOUSEHOLD_ID): Promise<"local" | "cloud"> {
+export async function getStorageMode(
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<"local" | "cloud"> {
   const ref = doc(db, `${householdPath(householdId)}/settings/app`);
   const snap = await getDoc(ref);
   const mode = snap.exists() ? (snap.data().storageMode as any) : null;
@@ -30,13 +32,28 @@ export async function getStorageMode(householdId: string = DEFAULT_HOUSEHOLD_ID)
 
 // ---------- Generic CRUD helpers (simple, safe) ----------
 
-export async function upsertDoc<T extends { id: string }>(
+export async function upsertDoc<T extends { id?: string }>(
   collectionName: string,
   item: T,
   householdId: string = DEFAULT_HOUSEHOLD_ID
-) {
-  const ref = doc(db, `${householdPath(householdId)}/${collectionName}/${item.id}`);
-  await setDoc(ref, { ...item, updatedAt: Timestamp.now() }, { merge: true });
+): Promise<string> {
+  const colPath = `${householdPath(householdId)}/${collectionName}`;
+  const colRef = collection(db, colPath);
+
+  // Se não vier id (ou vier vazio), geramos um id estável do Firestore.
+  const cleanId = typeof item.id === "string" ? item.id.trim() : "";
+  const id = cleanId ? cleanId : doc(colRef).id;
+
+  const ref = doc(colRef, id);
+
+  // Sempre persistimos o campo id para facilitar o front (e manter consistência nos imports/exports)
+  await setDoc(
+    ref,
+    { ...item, id, updatedAt: Timestamp.now() },
+    { merge: true }
+  );
+
+  return id;
 }
 
 export async function deleteDocById(
@@ -54,7 +71,9 @@ export async function listDocs<T>(
 ): Promise<T[]> {
   const colRef = collection(db, `${householdPath(householdId)}/${collectionName}`);
   const snap = await getDocs(colRef);
-  return snap.docs.map((d) => d.data() as T);
+
+  // Inclui id do documento, caso o documento não tenha o campo id (ou para garantir consistência)
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as T));
 }
 
 // ---------- Pagination helper for transactions (20 by 20) ----------
@@ -76,7 +95,7 @@ export async function listDocsPaged<T>(
 
   const snap = await getDocs(q2);
 
-  const items = snap.docs.map((d) => d.data() as T);
+  const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as T));
   const last = snap.docs.length > 0 ? (snap.docs[snap.docs.length - 1].get(orderField) as any) : null;
 
   return { items, nextCursor: last };
