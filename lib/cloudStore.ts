@@ -1,3 +1,5 @@
+
+export const DEFAULT_HOUSEHOLD_ID = "casa-paulo";
 import { db } from "./firebase";
 import {
   collection,
