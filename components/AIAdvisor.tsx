@@ -17,13 +17,26 @@ const AIAdvisor: React.FC<AIAdvisorProps> = ({ transacoes, investimentos, recibo
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
+      const safeTransacoes = Array.isArray(transacoes) ? transacoes : [];
+      const safeInvestments = Array.isArray(investments) ? investments : [];
+      
       const summary = {
-        totalGasto: transacoes.filter(t => t.tipo === 'DESPESA').reduce((acc, t) => acc + t.valor, 0),
-        totalRecebido: transacoes.filter(t => t.tipo === 'RECEITA').reduce((acc, t) => acc + t.valor, 0),
-        patrimonio: investimentos.reduce((acc, i) => acc + i.current_value, 0),
-        paises: Array.from(new Set(transacoes.map(t => t.codigo_pais))),
-        topCategorias: transacoes.slice(0, 10).map(t => t.description)
+        totalGasto: safeTransacoes
+          .filter((t) => t.tipo === "DESPESA")
+          .reduce((acc, t) => acc + Number(t.valor ?? 0), 0),
+      
+        totalRecebido: safeTransacoes
+          .filter((t) => t.tipo === "RECEITA")
+          .reduce((acc, t) => acc + Number(t.valor ?? 0), 0),
+      
+        patrimonio: safeInvestments.reduce(
+          (acc, a) => acc + Number((a as any).current_value ?? 0),
+          0
+        ),
+      
+        paises: Array.from(new Set(safeTransacoes.map((t) => (t as any).codigo_pais).filter(Boolean))),
       };
+
 
       const prompt = `Como um consultor financeiro sênior especializado em residentes fiscais em Portugal e no Brasil, analise os seguintes dados do meu gerenciador local:
       - Receitas Totais: ${summary.totalRecebido}
