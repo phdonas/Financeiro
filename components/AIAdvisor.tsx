@@ -15,7 +15,9 @@ const AIAdvisor: React.FC<AIAdvisorProps> = ({ transacoes, investimentos, recibo
   const analyzeFinances = async () => {
     setLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const apiKey = (import.meta as any).env?.VITE_GEMINI_API_KEY as string | undefined;
+      const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+
       
       const safeTransacoes = Array.isArray(transacoes) ? transacoes : [];
       const safeInvestments = Array.isArray(investments) ? investments : [];
