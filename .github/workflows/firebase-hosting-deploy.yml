@@ -1,14 +1,16 @@
-
 name: Deploy to Firebase Hosting
-'on':
+
+on:
   push:
     branches:
       - main
       - master
-  workflow_dispatch: 
+  workflow_dispatch:
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -18,31 +20,32 @@ jobs:
           node-version: 20
 
       - name: Instalar Dependências
-        run: npm install
+        run: npm ci
 
       - name: Build do Projeto
         run: npm run build
 
       - name: Verificar artefatos do build (dist)
         run: |
-          echo "Conteúdo da pasta dist:" 
+          echo "Conteúdo da pasta dist:"
           ls -la dist || (echo "ERRO: dist/ não existe" && exit 1)
           test -f dist/index.html || (echo "ERRO: dist/index.html não existe" && exit 1)
-          echo "Conteúdo da pasta dist/assets:" 
+          echo "Conteúdo da pasta dist/assets:"
           ls -la dist/assets || (echo "ERRO: dist/assets/ não existe" && exit 1)
 
-      - uses: FirebaseExtended/action-hosting-deploy@v0
+      - name: Deploy Hosting (Live)
+        uses: FirebaseExtended/action-hosting-deploy@v0
         with:
-          repoToken: '${{ secrets.GITHUB_TOKEN }}'
-          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_PHDGESFIN }}'
+          repoToken: "${{ secrets.GITHUB_TOKEN }}"
+          firebaseServiceAccount: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_PHDGESFIN }}"
           channelId: live
           projectId: phdgesfin
 
-      # IMPORTANT: action-hosting-deploy faz deploy APENAS de Hosting.
-      # Para manter Firestore Rules alinhadas ao código do repo, fazemos deploy explícito das rules.
+      # Deploy explícito das Firestore Rules (o action de Hosting não faz isso)
       - name: Deploy Firestore Rules
-        uses: w9jds/firebase-action@v2
+        uses: w9jds/firebase-action@v15.1.0
         with:
           args: deploy --only firestore:rules --project phdgesfin
         env:
-          GCP_SA_KEY: '${{ secrets.FIREBASE_SERVICE_ACCOUNT_PHDGESFIN }}'
+          GCP_SA_KEY: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_PHDGESFIN }}"
+
