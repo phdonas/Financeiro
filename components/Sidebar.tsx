@@ -1,11 +1,38 @@
 import React from "react";
 
-interface SidebarProps {
-  activePage: string;
-  onNavigate: (page: string) => void;
-}
+type SidebarProps = {
+  // Versão A (nova): App passa activeTab / setActiveTab
+  activeTab?: string;
+  setActiveTab?: (tab: string) => void;
 
-const Sidebar: React.FC<SidebarProps> = ({ activePage, onNavigate }) => {
+  // Versão B (antiga): App passa activePage / onNavigate
+  activePage?: string;
+  onNavigate?: (page: string) => void;
+
+  // opcionais (se quiser mostrar no rodapé)
+  userLabel?: string;
+  modeLabel?: string;
+};
+
+const Sidebar: React.FC<SidebarProps> = ({
+  activeTab,
+  setActiveTab,
+  activePage,
+  onNavigate,
+  userLabel = "Usuário",
+  modeLabel = "Modo",
+}) => {
+  // Compatibilidade: pega o “ativo” de qualquer uma das props
+  const current = activeTab ?? activePage ?? "dashboard";
+
+  // Compatibilidade: define a função de navegação que existir
+  const navigate = (id: string) => {
+    if (typeof setActiveTab === "function") return setActiveTab(id);
+    if (typeof onNavigate === "function") return onNavigate(id);
+    // se cair aqui, não tem handler -> evita crash
+    console.warn("Sidebar: nenhum handler de navegação foi fornecido.");
+  };
+
   const menuItems = [
     { id: "dashboard", label: "Painel Geral", icon: "🏠" },
     { id: "ai_advisor", label: "Consultor IA", icon: "🤖" },
@@ -34,10 +61,9 @@ const Sidebar: React.FC<SidebarProps> = ({ activePage, onNavigate }) => {
         {menuItems.map((item) => (
           <button
             key={item.id}
-            type="button"
-            onClick={() => onNavigate(item.id)}
+            onClick={() => navigate(item.id)}
             className={`w-full text-left px-4 py-3 rounded-xl transition-all flex items-center gap-3 border-l-4 ${
-              activePage === item.id
+              current === item.id
                 ? "bg-white/10 border-bb-yellow text-white font-bold"
                 : "border-transparent text-blue-100 hover:bg-white/5"
             }`}
@@ -53,14 +79,14 @@ const Sidebar: React.FC<SidebarProps> = ({ activePage, onNavigate }) => {
       <div className="p-4 bg-black/10 m-4 rounded-2xl">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-bb-yellow rounded-full flex items-center justify-center text-[10px] font-bold uppercase text-bb-blue">
-            FF
+            UL
           </div>
           <div>
             <p className="text-[10px] font-bold text-white leading-tight uppercase">
-              FinanceFamily
+              {userLabel}
             </p>
             <p className="text-[8px] text-blue-200 uppercase tracking-tighter italic">
-              Navegação
+              {modeLabel}
             </p>
           </div>
         </div>
