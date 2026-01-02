@@ -1,110 +1,103 @@
 import React, { useMemo } from "react";
-import type { Categoria, Orcamento, Transacao, Investment } from "../types";
 
-export type DashboardProps = {
-  transacoes?: Transacao[];
-  categorias?: Categoria[];
-  orcamentos?: Orcamento[];
-  investments?: Investment[];
-  viewMode: "local" | "cloud";
+type ExchangeRates = Record<string, number>;
+
+type Categoria = { id: string; nome: string };
+
+type Transacao = {
+  id: string;
+  tipo?: "DESPESA" | "RECEITA" | string;
+  valor?: number | string;
+  codigo_pais?: string;
+  date?: string;
+  categoria_id?: string;
 };
 
-function formatMoney(v: number, currency: string = "EUR") {
-  try {
-    return new Intl.NumberFormat("pt-PT", {
-      style: "currency",
-      currency
-    }).format(v || 0);
-  } catch {
-    return `${v || 0}`;
-  }
-}
+type Investimento = {
+  id: string;
+  current_value?: number | string;
+  country_code?: string;
+};
 
-function getVal(valor: number, codigo_pais?: string) {
-  // Aqui você pode fazer conversão real depois.
-  // Por enquanto, retornamos o valor “como está”.
-  return Number(valor || 0);
-}
+type Props = {
+  transacoes?: Transacao[];
+  categorias?: Categoria[];
+  investments?: Investimento[];
+  exchangeRates?: ExchangeRates;
+};
 
 export default function Dashboard({
-  transacoes = [],
-  categorias = [],
-  orcamentos = [],
-  investments = [],
-  viewMode
-}: DashboardProps) {
-  const safeTransacoes = Array.isArray(transacoes) ? transacoes : [];
-  const safeInvestments = Array.isArray(investments) ? investments : [];
+  transacoes,
+  categorias,
+  investments,
+  exchangeRates
+}: Props) {
+  const txs = useMemo(() => (Array.isArray(transacoes) ? transacoes : []), [transacoes]);
+  const cats = useMemo(() => (Array.isArray(categorias) ? categorias : []), [categorias]);
+  const invs = useMemo(() => (Array.isArray(investments) ? investments : []), [investments]);
+  const rates = exchangeRates || {};
 
-  const summary = useMemo(() => {
-    const saldoLedger = safeTransacoes.reduce((acc, t) => acc + getVal(t.valor, t.codigo_pais), 0);
+  const getVal = (valor: any, codigo_pais?: string) => {
+    const v = Number(valor ?? 0);
+    if (!codigo_pais) return v;
+    const rate = rates[codigo_pais];
+    if (!rate || Number.isNaN(rate)) return v;
+    return v * rate;
+  };
 
-    const capitalInvestido = safeInvestments.reduce(
-      (acc, a) => acc + getVal(a.current_value, a.country_code),
-      0
-    );
+  const total = useMemo(() => {
+    return txs.reduce((acc, t) => acc + getVal(t?.valor, t?.codigo_pais), 0);
+  }, [txs, rates]);
 
-    return {
-      saldoLedger,
-      capitalInvestido
-    };
-  }, [safeTransacoes, safeInvestments]);
+  const saldoLedger = useMemo(() => {
+    return txs.reduce((acc, t) => {
+      const v = getVal(t?.valor, t?.codigo_pais);
+      if (t?.tipo === "RECEITA") return acc + v;
+      if (t?.tipo === "DESPESA") return acc - v;
+      return acc;
+    }, 0);
+  }, [txs, rates]);
 
-  const categoriasResumo = useMemo(() => {
-    // Exemplo: total por categoria
-    const map: Record<string, number> = {};
+  const capitalInvestido = useMemo(() => {
+    return invs.reduce((acc, a) => {
+      const v = Number(a?.current_value ?? 0);
+      // se quiser converter por país depois, dá para aplicar taxa aqui
+      return acc + v;
+    }, 0);
+  }, [invs]);
 
-    for (const t of safeTransacoes) {
-      const cat = (t.categoria_id || "sem_categoria").toString();
-      map[cat] = (map[cat] || 0) + getVal(t.valor, t.codigo_pais);
-    }
+  // Exemplo por categoria (somando despesas)
+  const porCategoria = useMemo(() => {
+    return cats.map((cat) => {
+      const val = txs
+        .filter((t) => t?.tipo === "DESPESA" && t?.categoria_id === cat.id)
+        .reduce((acc, t) => acc + getVal(t?.valor, t?.codigo_pais), 0);
 
-    return Object.entries(map).map(([categoria_id, total]) => {
-      const cat = categorias.find((c) => c.id === categoria_id);
-      return {
-        categoria_id,
-        categoria_nome: cat?.nome || categoria_id,
-        total
-      };
+      return { categoria: cat.nome, total: val };
     });
-  }, [safeTransacoes, categorias]);
+  }, [txs, cats, rates]);
 
   return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">Painel Geral</h1>
-        <div className="text-xs px-3 py-1 rounded-full bg-white border">
-          {viewMode === "cloud" ? "Nuvem ativa" : "Modo local ativo"}
-        </div>
+    <div style={{ padding: 16 }}>
+      <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>
+        Painel Geral
+      </h2>
+
+      <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+        <div>Saldo (Ledger): {saldoLedger}</div>
+        <div>Total Transações (bruto): {total}</div>
+        <div>Capital Investido: {capitalInvestido}</div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <div className="bg-white border rounded-xl p-4">
-          <div className="text-sm opacity-70 mb-1">Saldo (lançamentos)</div>
-          <div className="text-2xl font-bold">{formatMoney(summary.saldoLedger)}</div>
-        </div>
-
-        <div className="bg-white border rounded-xl p-4">
-          <div className="text-sm opacity-70 mb-1">Capital investido</div>
-          <div className="text-2xl font-bold">{formatMoney(summary.capitalInvestido)}</div>
-        </div>
-      </div>
-
-      <div className="bg-white border rounded-xl p-4">
-        <h2 className="text-lg font-semibold mb-3">Totais por categoria</h2>
-
-        {categoriasResumo.length === 0 ? (
-          <div className="text-sm opacity-70">Sem dados para exibir.</div>
-        ) : (
-          <div className="space-y-2">
-            {categoriasResumo.map((row) => (
-              <div key={row.categoria_id} className="flex items-center justify-between">
-                <div className="text-sm">{row.categoria_nome}</div>
-                <div className="text-sm font-medium">{formatMoney(row.total)}</div>
-              </div>
-            ))}
+      <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>
+        Despesas por Categoria
+      </h3>
+      <div style={{ display: "grid", gap: 6 }}>
+        {porCategoria.map((x) => (
+          <div key={x.categoria}>
+            {x.categoria}: {x.total}
           </div>
-        )}
+        ))}
       </div>
     </div>
   );
