@@ -41,11 +41,11 @@ jobs:
           channelId: live
           projectId: phdgesfin
 
-      # Deploy explícito das Firestore Rules (o action de Hosting não faz isso)
-      - name: Deploy Firestore Rules
-        uses: w9jds/firebase-action@v15.1.0
-        with:
-          args: deploy --only firestore:rules --project phdgesfin
-        env:
-          GCP_SA_KEY: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_PHDGESFIN }}"
+   ##   # Deploy explícito das Firestore Rules (o action de Hosting não faz isso)
+   ##   - name: Deploy Firestore Rules
+   ##     uses: w9jds/firebase-action@v15.1.0
+   ##     with:
+   ##       args: deploy --only firestore:rules --project phdgesfin
+   ##     env:
+   ##       GCP_SA_KEY: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_PHDGESFIN }}"
 
