@@ -1,76 +1,116 @@
-
-export const DEFAULT_HOUSEHOLD_ID = "casa-paulo";
+// lib/cloudStore.ts
 import { db } from "./firebase";
 import {
+  Timestamp,
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
-  setDoc,
-  deleteDoc,
-  query,
+  limit,
   orderBy,
-  Timestamp,
-  serverTimestamp,
+  query,
+  setDoc,
 } from "firebase/firestore";
 
-const HOUSEHOLD_ID = "casa-paulo";
+export type StorageMode = "local" | "cloud";
 
-// settings/app (storageMode etc.)
-export async function getStorageMode(): Promise<"local" | "cloud"> {
-  const ref = doc(db, "households", HOUSEHOLD_ID, "settings", "app");
-  const snap = await getDoc(ref);
+// ✅ ESSENCIAL para o build do App.tsx
+export const DEFAULT_HOUSEHOLD_ID = "casa-paulo";
 
-  const mode = (snap.exists() ? snap.data()?.storageMode : null) as any;
-  return mode === "cloud" ? "cloud" : "local";
+function householdPath(householdId: string = DEFAULT_HOUSEHOLD_ID) {
+  return `households/${householdId}`;
 }
 
-// Lista todos os docs de uma subcoleção: households/{HOUSEHOLD_ID}/{collectionName}
-export async function listDocs<T = any>(collectionName: string): Promise<T[]> {
-  const colRef = collection(db, "households", HOUSEHOLD_ID, collectionName);
-
-  // ordena por updatedAt quando existir; se não existir, não quebra (mas pode ficar sem ordem)
-  // Para não falhar em coleções antigas sem updatedAt, tentamos primeiro com orderBy e se der erro, sem.
-  try {
-    const q = query(colRef, orderBy("updatedAt", "desc"));
-    const snap = await getDocs(q);
-    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }) as T);
-  } catch {
-    const snap = await getDocs(colRef);
-    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }) as T);
-  }
-}
-
-// Upsert: grava id + timestamps coerentes
-export async function upsertDoc<T extends { id: string }>(
-  collectionName: string,
-  item: T
-): Promise<void> {
-  const ref = doc(db, "households", HOUSEHOLD_ID, collectionName, item.id);
-
-  // preserva createdAt se já existe
-  const existing = await getDoc(ref);
-  const createdAt =
-    existing.exists() && existing.data()?.createdAt
-      ? existing.data()!.createdAt
-      : serverTimestamp();
-
+/**
+ * Garante que o usuário existe como "member" dentro do household.
+ * Isso permite regras baseadas em membership sem travar o primeiro acesso.
+ */
+export async function ensureHouseholdMember(
+  uid: string,
+  householdId: string = DEFAULT_HOUSEHOLD_ID,
+  extra?: { email?: string | null; name?: string | null }
+) {
+  if (!uid) return;
+  const ref = doc(db, `${householdPath(householdId)}/members/${uid}`);
   await setDoc(
     ref,
     {
-      ...item,
-      id: item.id,
-      createdAt,
-      updatedAt: serverTimestamp(),
+      uid,
+      active: true,
+      email: extra?.email ?? null,
+      name: extra?.name ?? null,
+      updatedAt: Timestamp.now(),
+      createdAt: Timestamp.now(),
     },
     { merge: true }
   );
 }
 
-export async function deleteDocById(
-  collectionName: string,
-  id: string
-): Promise<void> {
-  const ref = doc(db, "households", HOUSEHOLD_ID, collectionName, id);
+/**
+ * Lê storageMode do doc: households/{householdId}/settings/app
+ * Se não existir, assume "local" por segurança.
+ */
+export async function getStorageMode(
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<StorageMode> {
+  const ref = doc(db, `${householdPath(householdId)}/settings/app`);
+  const snap = await getDoc(ref);
+
+  if (!snap.exists()) return "local";
+
+  const data = snap.data() as any;
+  const mode = data?.storageMode;
+  return mode === "cloud" ? "cloud" : "local";
+}
+
+export async function setStorageMode(
+  mode: StorageMode,
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+) {
+  const ref = doc(db, `${householdPath(householdId)}/settings/app`);
+  await setDoc(
+    ref,
+    {
+      storageMode: mode,
+      updatedAt: Timestamp.now(),
+      createdAt: Timestamp.now(),
+    },
+    { merge: true }
+  );
+}
+
+/** Helpers genéricos de CRUD em subcoleções do household */
+export async function listHouseholdItems<T = any>(
+  subcollection: string,
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<T[]> {
+  const col = collection(db, `${householdPath(householdId)}/${subcollection}`);
+  const q = query(col, orderBy("createdAt", "desc"), limit(500));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as T[];
+}
+
+export async function upsertHouseholdItem<T extends { id?: string }>(
+  subcollection: string,
+  item: T,
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+) {
+  const col = collection(db, `${householdPath(householdId)}/${subcollection}`);
+  const ref = item.id ? doc(col, item.id) : doc(col);
+  await setDoc(
+    ref,
+    { ...item, updatedAt: Timestamp.now(), createdAt: Timestamp.now() },
+    { merge: true }
+  );
+  return ref.id;
+}
+
+export async function deleteHouseholdItem(
+  subcollection: string,
+  id: string,
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+) {
+  const ref = doc(db, `${householdPath(householdId)}/${subcollection}/${id}`);
   await deleteDoc(ref);
 }
