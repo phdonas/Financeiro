@@ -11,7 +11,14 @@ interface LedgerProps {
   onDelete: (id: string) => void;
 }
 
-const Ledger: React.FC<LedgerProps> = ({ viewMode, transacoes, categorias, formasPagamento, onSave, onDelete }) => {
+const Ledger: React.FC<LedgerProps> = ({
+  viewMode,
+  transacoes = [],
+  categorias = [],
+  formasPagamento = [],
+  onSave,
+  onDelete,
+}) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
   const [catFilter, setCatFilter] = useState<string>('');
