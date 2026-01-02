@@ -68,20 +68,33 @@ export default function App() {
   // -------------------- AUTH --------------------
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [membershipReady, setMembershipReady] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
+      // "authReady" deve sinalizar que o bootstrap mínimo terminou.
+      // Como as Rules podem depender do membership, garantimos membership ANTES
+      // de liberar leituras em households/{...}.
+      setAuthReady(false);
       setUser(u);
-      setAuthReady(true);
-      if (u) {
-        try {
-          await ensureHouseholdMember(u.uid, householdId, {
-            email: u.email ?? null,
-            name: u.displayName ?? null,
-          });
-        } catch (e) {
-          console.error("Falha ao garantir membership:", e);
-        }
+
+      if (!u) {
+        setMembershipReady(false);
+        setAuthReady(true);
+        return;
+      }
+
+      setMembershipReady(false);
+      try {
+        await ensureHouseholdMember(u.uid, householdId, {
+          email: u.email ?? null,
+          name: u.displayName ?? null,
+        });
+      } catch (e) {
+        console.error("Falha ao garantir membership:", e);
+      } finally {
+        setMembershipReady(true);
+        setAuthReady(true);
       }
     });
     return () => unsub();
@@ -116,6 +129,10 @@ export default function App() {
       return;
     }
 
+    // ⚠️ Se as rules exigem membership para ler settings,
+    // esperar o bootstrap (ensureHouseholdMember) evita "insufficient permissions".
+    if (!membershipReady) return;
+
     (async () => {
       try {
         const mode = await getStorageMode(householdId);
@@ -127,16 +144,16 @@ export default function App() {
         localStorage.setItem(lsKey("storageMode"), JSON.stringify("local"));
       }
     })();
-  }, [authReady, user, householdId]);
+  }, [authReady, user, membershipReady, householdId]);
 
-  const isCloud = storageMode === "cloud" && !!user;
+  const isCloud = storageMode === "cloud" && !!user && membershipReady;
 
   const setStorageModeSafe = useCallback(
     async (mode: StorageMode) => {
       setStorageMode(mode);
       localStorage.setItem(lsKey("storageMode"), JSON.stringify(mode));
 
-      if (user) {
+      if (user && membershipReady) {
         try {
           await setStorageModeCloud(mode, householdId);
         } catch (e) {
@@ -144,7 +161,7 @@ export default function App() {
         }
       }
     },
-    [user, householdId]
+    [user, membershipReady, householdId]
   );
 
   // -------------------- DATA --------------------
@@ -163,7 +180,7 @@ export default function App() {
 
   useEffect(() => {
     if (!authReady) return;
-    if (storageMode === "cloud" && !user) return;
+    if (storageMode === "cloud" && (!user || !membershipReady)) return;
 
     (async () => {
       setLoadingData(true);
@@ -246,7 +263,7 @@ export default function App() {
         setLoadingData(false);
       }
     })();
-  }, [authReady, user, storageMode, householdId]);
+  }, [authReady, user, membershipReady, storageMode, householdId]);
 
   // fallback local (sempre grava)
   useEffect(() => {

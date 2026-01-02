@@ -32,29 +32,8 @@ export async function ensureHouseholdMember(
   extra?: { email?: string | null; name?: string | null }
 ) {
   if (!uid) return;
-
-  // ✅ bootstrap membership global (regras costumam validar /members/{uid})
-  const globalRef = doc(db, `members/${uid}`);
-  await setDoc(
-    globalRef,
-    {
-      uid,
-      householdId,
-      active: true,
-      // permissões básicas (ajuste depois conforme sua política)
-      canRead: true,
-      canCreate: true,
-      canUpdate: true,
-      canDelete: true,
-      email: extra?.email ?? null,
-      name: extra?.name ?? null,
-      updatedAt: Timestamp.now(),
-      createdAt: Timestamp.now(),
-    },
-    { merge: true }
-  );
-
-  // (Opcional) também registra dentro do household para uso futuro
+  // ✅ Padrão do projeto: membership DENTRO do household
+  // households/{householdId}/members/{uid}
   const hhRef = doc(db, `${householdPath(householdId)}/members/${uid}`);
   await setDoc(
     hhRef,
@@ -123,9 +102,14 @@ export async function upsertHouseholdItem<T extends { id?: string }>(
 ) {
   const col = collection(db, `${householdPath(householdId)}/${subcollection}`);
   const ref = item.id ? doc(col, item.id) : doc(col);
+  const now = Timestamp.now();
   await setDoc(
     ref,
-    { ...item, updatedAt: Timestamp.now(), createdAt: Timestamp.now() },
+    {
+      ...item,
+      updatedAt: now,
+      ...(item.id ? {} : { createdAt: now }),
+    },
     { merge: true }
   );
   return ref.id;

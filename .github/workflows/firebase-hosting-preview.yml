@@ -23,6 +23,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify build artifacts (dist)
+        run: |
+          echo "dist contents:" 
+          ls -la dist || (echo "ERROR: dist/ missing" && exit 1)
+          test -f dist/index.html || (echo "ERROR: dist/index.html missing" && exit 1)
+          echo "dist/assets contents:" 
+          ls -la dist/assets || (echo "ERROR: dist/assets/ missing" && exit 1)
+
       - name: Deploy Preview
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
