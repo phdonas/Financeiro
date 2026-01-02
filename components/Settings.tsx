@@ -1,220 +1,579 @@
+import React, { useMemo, useState } from "react";
 
-import React, { useState, useMemo } from 'react';
-import Accounts from './Accounts';
-import { CategoriaContabil, FormaPagamento, Orcamento, Fornecedor, TipoTransacao, InssYearlyConfig } from '../types';
+type CountryCode = "PT" | "BR";
+
+type Categoria = {
+  id: string;
+  nome: string;
+  cor?: string;
+  countryCode?: CountryCode;
+};
+
+type FormaPagamentoCategoria = "BANCO" | "CARTAO" | "DINHEIRO";
+
+type FormaPagamento = {
+  id: string;
+  nome: string;
+  categoria: FormaPagamentoCategoria;
+  countryCode?: CountryCode;
+};
+
+type Fornecedor = {
+  id: string;
+  nome: string;
+  countryCode?: CountryCode;
+};
+
+type Orcamento = {
+  id: string;
+  countryCode: CountryCode;
+  categoriaId: string;
+  valor: number;
+};
 
 interface SettingsProps {
-  categorias: CategoriaContabil[];
-  onSaveCat: (c: CategoriaContabil) => void;
-  onDeleteCat: (id: string) => void;
+  categorias: Categoria[];
   formasPagamento: FormaPagamento[];
-  onSaveFP: (f: FormaPagamento) => void;
-  onDeleteFP: (id: string) => void;
-  orcamentos: Orcamento[];
-  onSaveOrc: (o: Orcamento) => void;
-  onDeleteOrc: (id: string) => void;
   fornecedores: Fornecedor[];
-  onSaveSup: (s: Fornecedor) => void;
-  onDeleteSup: (id: string) => void;
-  inssConfigs: InssYearlyConfig[];
-  onSaveInss: (i: InssYearlyConfig) => void;
-  onDeleteInss: (ano: string) => void;
+  orcamentos: Orcamento[];
+
+  onSaveCategoria: (c: Categoria) => void;
+  onDeleteCategoria: (id: string) => void;
+
+  onSaveFormaPagamento: (fp: FormaPagamento) => void;
+  onDeleteFormaPagamento: (id: string) => void;
+
+  onSaveFornecedor: (f: Fornecedor) => void;
+  onDeleteFornecedor: (id: string) => void;
+
+  onSaveOrcamento: (o: Orcamento) => void;
+  onDeleteOrcamento: (id: string) => void;
 }
 
-const Settings: React.FC<SettingsProps> = ({ 
-  categorias, onSaveCat, onDeleteCat,
-  formasPagamento, onSaveFP, onDeleteFP,
-  orcamentos, onSaveOrc, onDeleteOrc,
-  fornecedores, onSaveSup, onDeleteSup,
-  inssConfigs, onSaveInss, onDeleteInss
+function newId() {
+  // browser moderno (inclui Chrome/Edge)
+  // fallback caso rode em ambiente sem crypto
+  // @ts-ignore
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    // @ts-ignore
+    ? crypto.randomUUID()
+    : "id_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+const Settings: React.FC<SettingsProps> = ({
+  categorias,
+  formasPagamento,
+  fornecedores,
+  orcamentos,
+  onSaveCategoria,
+  onDeleteCategoria,
+  onSaveFormaPagamento,
+  onDeleteFormaPagamento,
+  onSaveFornecedor,
+  onDeleteFornecedor,
+  onSaveOrcamento,
+  onDeleteOrcamento,
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'PLANO' | 'PAGAMENTO' | 'ORCAMENTO' | 'FORNECEDORES' | 'INSS'>('PLANO');
-  
-  // States CRUD Fornecedores
-  const [isSupModalOpen, setIsSupModalOpen] = useState(false);
-  const [editingSupId, setEditingSupId] = useState<string | null>(null);
-  const [newSup, setNewSup] = useState<Partial<Fornecedor>>({ nome: '', pais: 'PT', descricao: '', flag_calcula_premiacao: false });
+  const [tab, setTab] = useState<"CATEGORIAS" | "PAGAMENTO" | "FORNECEDORES" | "ORCAMENTO">("CATEGORIAS");
 
-  // States CRUD Formas Pagamento
-  const [isFPModalOpen, setIsFPModalOpen] = useState(false);
-  const [editingFPId, setEditingFPId] = useState<string | null>(null);
-  const [newFP, setNewFP] = useState<Partial<FormaPagamento>>({ nome: '', categoria: 'BANCO' });
+  // --- Modals state ---
+  const [catOpen, setCatOpen] = useState(false);
+  const [fpOpen, setFpOpen] = useState(false);
+  const [supOpen, setSupOpen] = useState(false);
+  const [orcOpen, setOrcOpen] = useState(false);
 
-  // States CRUD Orçamentos
-  const [isOrcModalOpen, setIsOrcModalOpen] = useState(false);
-  const [newOrc, setNewOrc] = useState<Partial<Orcamento & { recorrente?: boolean }>>({ categoria_id: '', ano: new Date().getFullYear(), mes: new Date().getMonth(), valor_meta: 0, codigo_pais: 'PT', recorrente: false });
-  const [filterYear, setFilterYear] = useState<number>(new Date().getFullYear());
-  const [budgetFilterCountry, setBudgetFilterCountry] = useState<'PT' | 'BR'>('PT');
+  const [catForm, setCatForm] = useState<Categoria>({ id: "", nome: "", cor: "#1D4ED8", countryCode: "PT" });
+  const [fpForm, setFpForm] = useState<FormaPagamento>({ id: "", nome: "", categoria: "BANCO", countryCode: "PT" });
+  const [supForm, setSupForm] = useState<Fornecedor>({ id: "", nome: "", countryCode: "PT" });
+  const [orcForm, setOrcForm] = useState<Orcamento>({ id: "", countryCode: "PT", categoriaId: "", valor: 0 });
 
-  // States CRUD INSS Params
-  const [isInssModalOpen, setIsInssModalOpen] = useState(false);
-  const [editingInssYear, setEditingInssYear] = useState<number | null>(null);
-  const [inssFormData, setInssFormData] = useState<InssYearlyConfig>({
-    ano: 2025, salario_base: 7700, percentual_inss: 11,
-    paulo: { nit: '', total_parcelas: 0, data_aposentadoria: '' },
-    debora: { nit: '', total_parcelas: 0, data_aposentadoria: '' }
-  });
+  const categoriasById = useMemo(() => {
+    const m = new Map<string, Categoria>();
+    categorias.forEach((c) => m.set(c.id, c));
+    return m;
+  }, [categorias]);
 
-  const meses_nomes = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+  // --- Actions ---
+  function openNewCategoria() {
+    setCatForm({ id: newId(), nome: "", cor: "#1D4ED8", countryCode: "PT" });
+    setCatOpen(true);
+  }
+  function saveCategoria() {
+    if (!catForm.nome.trim()) return;
+    onSaveCategoria({ ...catForm, nome: catForm.nome.trim() });
+    setCatOpen(false);
+  }
 
-  const handleSaveSup = () => {
-    if (!newSup.nome) return;
-    onSaveSup({ ...newSup, id: editingSupId || Math.random().toString(36).substr(2, 9) } as Fornecedor);
-    setIsSupModalOpen(false); setEditingSupId(null);
+  function openNewFP() {
+    setFpForm({ id: newId(), nome: "", categoria: "BANCO", countryCode: "PT" });
+    setFpOpen(true);
+  }
+  function saveFP() {
+    if (!fpForm.nome.trim()) return;
+    onSaveFormaPagamento({ ...fpForm, nome: fpForm.nome.trim() });
+    setFpOpen(false);
+  }
+
+  function openNewFornecedor() {
+    setSupForm({ id: newId(), nome: "", countryCode: "PT" });
+    setSupOpen(true);
+  }
+  function saveFornecedor() {
+    if (!supForm.nome.trim()) return;
+    onSaveFornecedor({ ...supForm, nome: supForm.nome.trim() });
+    setSupOpen(false);
+  }
+
+  function openNewOrcamento() {
+    setOrcForm({ id: newId(), countryCode: "PT", categoriaId: categorias[0]?.id || "", valor: 0 });
+    setOrcOpen(true);
+  }
+  function saveOrcamento() {
+    if (!orcForm.categoriaId) return;
+    onSaveOrcamento({ ...orcForm, valor: Number(orcForm.valor || 0) });
+    setOrcOpen(false);
+  }
+
+  // --- UI helpers ---
+  const tabBtn = (id: typeof tab, label: string) => (
+    <button
+      type="button"
+      onClick={() => setTab(id)}
+      className={`px-4 py-2 rounded-xl text-[11px] font-black uppercase tracking-widest border ${
+        tab === id ? "bg-bb-blue text-white border-bb-blue" : "bg-white text-bb-blue border-gray-200"
+      }`}
+    >
+      {label}
+    </button>
+  );
+
+  const Modal: React.FC<{ open: boolean; title: string; onClose: () => void; children: React.ReactNode }> = ({
+    open,
+    title,
+    onClose,
+    children,
+  }) => {
+    if (!open) return null;
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <div className="w-full max-w-xl bg-white rounded-[2rem] shadow-2xl p-6">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-bb-blue font-black uppercase text-sm">{title}</h3>
+            <button type="button" onClick={onClose} className="px-3 py-1 rounded-xl bg-gray-100 font-black text-xs">
+              Fechar
+            </button>
+          </div>
+          {children}
+        </div>
+      </div>
+    );
   };
-
-  const handleSaveFP = () => {
-    if (!newFP.nome) return;
-    onSaveFP({ ...newFP, id: editingFPId || Math.random().toString(36).substr(2, 9) } as FormaPagamento);
-    setIsFPModalOpen(false); setEditingFPId(null);
-  };
-
-  const handleSaveOrcamento = () => {
-    if (!newOrc.categoria_id) return;
-    const startMonth = newOrc.mes!;
-    const endMonth = newOrc.recorrente ? 11 : startMonth;
-    for (let m = startMonth; m <= endMonth; m++) {
-      onSaveOrc({
-        id: Math.random().toString(36).substr(2, 9),
-        categoria_id: newOrc.categoria_id!,
-        ano: newOrc.ano!,
-        mes: m,
-        valor_meta: newOrc.valor_meta!,
-        codigo_pais: newOrc.codigo_pais as 'PT' | 'BR'
-      });
-    }
-    setIsOrcModalOpen(false);
-  };
-
-  const filteredOrcamentos = useMemo(() => {
-    return orcamentos.filter(o => o.ano === filterYear && o.codigo_pais === budgetFilterCountry).sort((a, b) => a.mes - b.mes);
-  }, [orcamentos, filterYear, budgetFilterCountry]);
 
   return (
-    <div className="p-8 space-y-8 pb-20">
-      <div className="flex gap-4 border-b">
-        {['PLANO', 'PAGAMENTO', 'ORCAMENTO', 'FORNECEDORES', 'INSS'].map(tab => (
-          <button key={tab} onClick={() => setActiveSubTab(tab as any)} className={`pb-4 px-2 text-xs font-black uppercase tracking-widest ${activeSubTab === tab ? 'border-b-4 border-bb-blue text-bb-blue' : 'text-gray-400'}`}>
-            {tab}
-          </button>
-        ))}
+    <div className="p-6 space-y-6">
+      <div className="bg-white p-6 rounded-[2rem] border shadow-sm flex flex-wrap items-center gap-3 justify-between">
+        <div>
+          <h2 className="text-2xl font-black text-bb-blue uppercase italic">Configurações</h2>
+          <p className="text-[11px] text-gray-500 font-semibold">Cadastros base: categorias, formas de pagamento, fornecedores e metas.</p>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {tabBtn("CATEGORIAS", "Categorias")}
+          {tabBtn("PAGAMENTO", "Pagamento")}
+          {tabBtn("FORNECEDORES", "Fornecedores")}
+          {tabBtn("ORCAMENTO", "Orçamento")}
+        </div>
       </div>
 
-      {activeSubTab === 'PLANO' && <Accounts viewMode="GLOBAL" categorias={categorias} setCategorias={(updated) => {
-        // Adaptador para o componente Accounts antigo que esperava setCategorias local
-        if (typeof updated === 'function') {
-           const res = updated(categorias);
-           res.forEach((c: any) => onSaveCat(c));
-        } else {
-           updated.forEach((c: any) => onSaveCat(c));
-        }
-      }} />}
+      {/* CATEGORIAS */}
+      {tab === "CATEGORIAS" && (
+        <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-black text-bb-blue uppercase italic">Categorias</h3>
+            <button
+              type="button"
+              onClick={openNewCategoria}
+              className="px-4 py-2 rounded-xl bg-bb-blue text-white text-[10px] font-black uppercase shadow-lg"
+            >
+              + Adicionar
+            </button>
+          </div>
 
-      {activeSubTab === 'PAGAMENTO' && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <h3 className="text-xl font-black text-bb-blue uppercase italic">Formas de Pagamento</h3>
-            <button onClick={() => { setNewFP({nome:'', categoria:'BANCO'}); setEditingFPId(null); setIsFPModalOpen(true); }} className="bg-bb-blue text-white px-6 py-2 rounded-xl text-[10px] font-black shadow-lg">+ Adicionar</button>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {['BANCO', 'CARTAO', 'DINHEIRO'].map(cat => (
-              <div key={cat} className="bg-white p-6 rounded-[2rem] border shadow-sm">
-                <h4 className="text-[10px] font-black text-bb-blue uppercase mb-4 border-b pb-2">{cat}</h4>
-                <div className="space-y-2">
-                  {formasPagamento.filter(f => f.categoria === cat).map(f => (
-                    <div key={f.id} className="flex justify-between items-center bg-gray-50 p-3 rounded-xl group">
-                      <span className="text-xs font-bold text-gray-700">{f.nome}</span>
-                      <div className="flex gap-2 opacity-0 group-hover:opacity-100"><button onClick={() => { setEditingFPId(f.id); setNewFP(f); setIsFPModalOpen(true); }} className="text-[8px] uppercase font-black text-bb-blue underline">Edit</button><button onClick={() => onDeleteFP(f.id)} className="text-[8px] uppercase font-black text-red-500 underline">X</button></div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {activeSubTab === 'ORCAMENTO' && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center bg-white p-6 rounded-[2rem] border shadow-sm flex-wrap gap-4">
-            <h3 className="text-xl font-black text-bb-blue uppercase italic">Gestão de Metas Nuvem</h3>
-            <div className="flex gap-4 items-center">
-              <select className="bg-gray-50 border-none p-2 rounded-xl text-xs font-bold" value={budgetFilterCountry} onChange={e => setBudgetFilterCountry(e.target.value as any)}><option value="PT">🇵🇹 PT</option><option value="BR">🇧🇷 BR</option></select>
-              <button onClick={() => { setNewOrc({categoria_id:'', ano: filterYear, mes: 0, valor_meta: 0, recorrente: false, codigo_pais: budgetFilterCountry}); setIsOrcModalOpen(true); }} className="bg-bb-blue text-white px-6 py-3 rounded-2xl text-[10px] font-black uppercase shadow-xl">+ Definir Meta</button>
-            </div>
-          </div>
-          <div className="bg-white rounded-[2rem] border shadow-sm overflow-hidden">
-             <table className="w-full text-[11px]"><thead className="bg-gray-50 text-bb-blue font-black uppercase italic"><tr><th className="px-6 py-4">Mês</th><th className="px-6 py-4">Categoria</th><th className="px-6 py-4 text-right">Valor Meta</th><th className="px-6 py-4 text-center">X</th></tr></thead>
-               <tbody className="divide-y">{filteredOrcamentos.map(o => (<tr key={o.id} className="hover:bg-gray-50 group"><td className="px-6 py-4 font-bold">{meses_nomes[o.mes]}</td><td className="px-6 py-4 font-black text-bb-blue uppercase">{categorias.find(c => c.id === o.categoria_id)?.nome || '---'}</td><td className="px-6 py-4 text-right font-black">{o.codigo_pais === 'PT' ? '€' : 'R$'} {o.valor_meta.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td><td className="px-6 py-4 text-center"><button onClick={() => onDeleteOrc(o.id)} className="text-red-400 font-black text-[8px] opacity-0 group-hover:opacity-100">REMOVER</button></td></tr>))}</tbody>
-             </table>
-          </div>
-        </div>
-      )}
-
-      {/* Fornecedores and INSS follow same prop patterns */}
-      {/* ... keeping simplified for Step 2 completion ... */}
-
-      {isSupModalOpen && (
-        <div className="fixed inset-0 bg-bb-blue/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2.5rem] p-8 w-full max-sm space-y-4 animate-in zoom-in">
-            <h3 className="text-lg font-black text-bb-blue italic uppercase tracking-tighter">Fornecedor</h3>
-            <input className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold border-none" placeholder="Nome" value={newSup.nome} onChange={e => setNewSup({...newSup, nome: e.target.value})} />
-            <div className="flex gap-3 pt-4"><button onClick={() => setIsSupModalOpen(false)} className="flex-1 text-xs font-black uppercase text-gray-400">Sair</button><button onClick={handleSaveSup} className="flex-2 bg-bb-blue text-white py-3 px-8 rounded-xl text-xs font-black shadow-lg">Salvar</button></div>
-          </div>
-        </div>
-      )}
-
-      {isOrcModalOpen && (
-        <div className="fixed inset-0 bg-bb-blue/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2.5rem] p-8 w-full max-w-sm space-y-4 animate-in zoom-in">
-            <h3 className="text-lg font-black text-bb-blue uppercase italic">Definir Meta</h3>
-            <select className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold border-none" value={newOrc.categoria_id} onChange={e => setNewOrc({...newOrc, categoria_id: e.target.value})}><option value="">Selecione...</option>{categorias.filter(c => c.tipo === TipoTransacao.DESPESA).map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
-            <input type="number" step="0.01" className="w-full bg-gray-50 p-4 rounded-xl text-sm font-black" placeholder="Valor Meta" value={newOrc.valor_meta || ''} onChange={e => setNewOrc({...newOrc, valor_meta: Number(e.target.value)})} />
-            <label className="flex items-center gap-2 text-[9px] font-black uppercase italic text-bb-blue"><input type="checkbox" checked={newOrc.recorrente} onChange={e => setNewOrc({...newOrc, recorrente: e.target.checked})} /> Replicar para todo o ano</label>
-            <div className="flex gap-3 pt-4"><button onClick={() => setIsOrcModalOpen(false)} className="flex-1 text-xs font-black uppercase text-gray-400">Sair</button><button onClick={handleSaveOrcamento} className="flex-2 bg-bb-blue text-white py-3 px-8 rounded-xl text-xs font-black uppercase shadow-lg">Confirmar</button></div>
-          </div>
-        </div>
-      )}
-
-      {activeSubTab === 'FORNECEDORES' && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <h3 className="text-xl font-black text-bb-blue uppercase italic">Fornecedores</h3>
-            <button onClick={() => { setNewSup({nome:'', pais:'PT'}); setEditingSupId(null); setIsSupModalOpen(true); }} className="bg-bb-blue text-white px-6 py-2 rounded-xl text-[10px] font-black shadow-lg">+ Novo Fornecedor</button>
-          </div>
-          <div className="bg-white rounded-[2rem] border shadow-sm overflow-hidden">
-            <table className="w-full text-left text-[11px]"><thead className="bg-gray-50 text-bb-blue uppercase font-black italic"><tr><th className="px-6 py-4">País</th><th className="px-6 py-4">Nome</th><th className="px-6 py-4 text-center">Ações</th></tr></thead>
-              <tbody className="divide-y">{fornecedores.map(s => (<tr key={s.id} className="hover:bg-gray-50 group"><td className="px-6 py-4">{s.pais}</td><td className="px-6 py-4 font-black">{s.nome}</td><td className="px-6 py-4 text-center"><button onClick={() => { setEditingSupId(s.id); setNewSup(s); setIsSupModalOpen(true); }} className="text-bb-blue font-black uppercase text-[8px] mr-2">Edit</button><button onClick={() => onDeleteSup(s.id)} className="text-red-400 font-black uppercase text-[8px]">Delete</button></td></tr>))}</tbody>
+          <div className="overflow-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead className="text-[10px] uppercase text-gray-500">
+                <tr>
+                  <th className="py-2">Nome</th>
+                  <th className="py-2">País</th>
+                  <th className="py-2">Cor</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {categorias.map((c) => (
+                  <tr key={c.id} className="border-t">
+                    <td className="py-3 font-semibold">{c.nome}</td>
+                    <td className="py-3">{c.countryCode || "-"}</td>
+                    <td className="py-3">
+                      <span className="inline-flex items-center gap-2">
+                        <span className="w-4 h-4 rounded" style={{ background: c.cor || "#94A3B8" }} />
+                        <span className="text-[11px] text-gray-500">{c.cor || "-"}</span>
+                      </span>
+                    </td>
+                    <td className="py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onDeleteCategoria(c.id)}
+                        className="px-3 py-1 rounded-xl bg-red-50 text-red-700 text-[10px] font-black uppercase"
+                      >
+                        Excluir
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {categorias.length === 0 && (
+                  <tr>
+                    <td className="py-6 text-gray-500" colSpan={4}>
+                      Nenhuma categoria cadastrada.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {activeSubTab === 'INSS' && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <h3 className="text-xl font-black text-bb-blue uppercase italic">Parâmetros INSS</h3>
-            <button onClick={() => { setInssFormData({ano: 2025, salario_base: 7700, percentual_inss: 11, paulo: { nit: '', total_parcelas: 0, data_aposentadoria: '' }, debora: { nit: '', total_parcelas: 0, data_aposentadoria: '' }}); setEditingInssYear(null); setIsInssModalOpen(true); }} className="bg-bb-blue text-white px-6 py-2 rounded-xl text-[10px] font-black shadow-lg">+ Novo Ano</button>
+      {/* PAGAMENTO */}
+      {tab === "PAGAMENTO" && (
+        <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-black text-bb-blue uppercase italic">Formas de Pagamento</h3>
+            <button
+              type="button"
+              onClick={openNewFP}
+              className="px-4 py-2 rounded-xl bg-bb-blue text-white text-[10px] font-black uppercase shadow-lg"
+            >
+              + Adicionar
+            </button>
           </div>
-          <div className="bg-white rounded-[2rem] border shadow-sm overflow-hidden">
-             <table className="w-full text-[11px]"><thead className="bg-gray-50 text-bb-blue font-black italic"><tr><th className="px-6 py-4">Ano</th><th className="px-6 py-4">Base</th><th className="px-6 py-4 text-center">Alíquota</th><th className="px-6 py-4 text-center">Ações</th></tr></thead>
-               <tbody className="divide-y">{inssConfigs.map(config => (<tr key={config.ano} className="hover:bg-gray-50 group"><td className="px-6 py-4 font-black">{config.ano}</td><td className="px-6 py-4">R$ {config.salario_base.toLocaleString('pt-BR')}</td><td className="px-6 py-4 text-center">{config.percentual_inss}%</td><td className="px-6 py-4 text-center"><button onClick={() => { setEditingInssYear(config.ano); setInssFormData(config); setIsInssModalOpen(true); }} className="text-bb-blue text-[8px] font-black uppercase mr-2">Edit</button><button onClick={() => onDeleteInss(config.ano.toString())} className="text-red-400 text-[8px] font-black uppercase">Del</button></td></tr>))}</tbody>
-             </table>
+
+          <div className="overflow-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead className="text-[10px] uppercase text-gray-500">
+                <tr>
+                  <th className="py-2">Nome</th>
+                  <th className="py-2">Categoria</th>
+                  <th className="py-2">País</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {formasPagamento.map((fp) => (
+                  <tr key={fp.id} className="border-t">
+                    <td className="py-3 font-semibold">{fp.nome}</td>
+                    <td className="py-3">{fp.categoria}</td>
+                    <td className="py-3">{fp.countryCode || "-"}</td>
+                    <td className="py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onDeleteFormaPagamento(fp.id)}
+                        className="px-3 py-1 rounded-xl bg-red-50 text-red-700 text-[10px] font-black uppercase"
+                      >
+                        Excluir
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {formasPagamento.length === 0 && (
+                  <tr>
+                    <td className="py-6 text-gray-500" colSpan={4}>
+                      Nenhuma forma de pagamento cadastrada.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
 
-      {isInssModalOpen && (
-        <div className="fixed inset-0 bg-bb-blue/60 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2.5rem] p-10 w-full max-w-md space-y-4">
-            <h3 className="text-xl font-black text-bb-blue italic uppercase tracking-tighter">Parâmetros INSS</h3>
-            <input type="number" className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold" value={inssFormData.ano} onChange={e => setInssFormData({...inssFormData, ano: Number(e.target.value)})} placeholder="Ano Fiscal" />
-            <input type="number" className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold" value={inssFormData.salario_base} onChange={e => setInssFormData({...inssFormData, salario_base: Number(e.target.value)})} placeholder="Salário Base" />
-            <input type="number" className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold" value={inssFormData.percentual_inss} onChange={e => setInssFormData({...inssFormData, percentual_inss: Number(e.target.value)})} placeholder="Alíquota %" />
-            <div className="flex gap-3 pt-4"><button onClick={() => setIsInssModalOpen(false)} className="flex-1 text-xs font-black uppercase text-gray-400">Sair</button><button onClick={() => { onSaveInss(inssFormData); setIsInssModalOpen(false); }} className="flex-2 bg-bb-blue text-white py-3 rounded-xl text-xs font-black uppercase">Salvar Nuvem</button></div>
+      {/* FORNECEDORES */}
+      {tab === "FORNECEDORES" && (
+        <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-black text-bb-blue uppercase italic">Fornecedores</h3>
+            <button
+              type="button"
+              onClick={openNewFornecedor}
+              className="px-4 py-2 rounded-xl bg-bb-blue text-white text-[10px] font-black uppercase shadow-lg"
+            >
+              + Adicionar
+            </button>
+          </div>
+
+          <div className="overflow-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead className="text-[10px] uppercase text-gray-500">
+                <tr>
+                  <th className="py-2">Nome</th>
+                  <th className="py-2">País</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {fornecedores.map((f) => (
+                  <tr key={f.id} className="border-t">
+                    <td className="py-3 font-semibold">{f.nome}</td>
+                    <td className="py-3">{f.countryCode || "-"}</td>
+                    <td className="py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onDeleteFornecedor(f.id)}
+                        className="px-3 py-1 rounded-xl bg-red-50 text-red-700 text-[10px] font-black uppercase"
+                      >
+                        Excluir
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {fornecedores.length === 0 && (
+                  <tr>
+                    <td className="py-6 text-gray-500" colSpan={3}>
+                      Nenhum fornecedor cadastrado.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
+
+      {/* ORÇAMENTO */}
+      {tab === "ORCAMENTO" && (
+        <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xl font-black text-bb-blue uppercase italic">Orçamento (metas)</h3>
+            <button
+              type="button"
+              onClick={openNewOrcamento}
+              className="px-4 py-2 rounded-xl bg-bb-blue text-white text-[10px] font-black uppercase shadow-lg"
+            >
+              + Definir meta
+            </button>
+          </div>
+
+          <div className="overflow-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead className="text-[10px] uppercase text-gray-500">
+                <tr>
+                  <th className="py-2">País</th>
+                  <th className="py-2">Categoria</th>
+                  <th className="py-2">Valor</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {orcamentos.map((o) => (
+                  <tr key={o.id} className="border-t">
+                    <td className="py-3 font-semibold">{o.countryCode}</td>
+                    <td className="py-3">{categoriasById.get(o.categoriaId)?.nome || o.categoriaId}</td>
+                    <td className="py-3">{Number(o.valor).toFixed(2)}</td>
+                    <td className="py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onDeleteOrcamento(o.id)}
+                        className="px-3 py-1 rounded-xl bg-red-50 text-red-700 text-[10px] font-black uppercase"
+                      >
+                        Excluir
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {orcamentos.length === 0 && (
+                  <tr>
+                    <td className="py-6 text-gray-500" colSpan={4}>
+                      Nenhuma meta definida.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Categoria */}
+      <Modal open={catOpen} title="Adicionar categoria" onClose={() => setCatOpen(false)}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Nome</label>
+            <input
+              value={catForm.nome}
+              onChange={(e) => setCatForm((s) => ({ ...s, nome: e.target.value }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              placeholder="Ex.: Alimentação"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">País</label>
+            <select
+              value={catForm.countryCode || "PT"}
+              onChange={(e) => setCatForm((s) => ({ ...s, countryCode: e.target.value as CountryCode }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+            >
+              <option value="PT">🇵🇹 PT</option>
+              <option value="BR">🇧🇷 BR</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Cor</label>
+            <input
+              type="color"
+              value={catForm.cor || "#1D4ED8"}
+              onChange={(e) => setCatForm((s) => ({ ...s, cor: e.target.value }))}
+              className="w-full mt-1 h-12 p-2 rounded-xl border bg-gray-50"
+            />
+          </div>
+          <div className="flex items-end justify-end gap-2">
+            <button type="button" onClick={() => setCatOpen(false)} className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase">
+              Cancelar
+            </button>
+            <button type="button" onClick={saveCategoria} className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase">
+              Salvar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL: Forma de Pagamento */}
+      <Modal open={fpOpen} title="Adicionar forma de pagamento" onClose={() => setFpOpen(false)}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Nome</label>
+            <input
+              value={fpForm.nome}
+              onChange={(e) => setFpForm((s) => ({ ...s, nome: e.target.value }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              placeholder="Ex.: ABN AMRO / Visa / Dinheiro"
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Categoria</label>
+            <select
+              value={fpForm.categoria}
+              onChange={(e) => setFpForm((s) => ({ ...s, categoria: e.target.value as FormaPagamentoCategoria }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+            >
+              <option value="BANCO">Banco</option>
+              <option value="CARTAO">Cartão</option>
+              <option value="DINHEIRO">Dinheiro</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">País</label>
+            <select
+              value={fpForm.countryCode || "PT"}
+              onChange={(e) => setFpForm((s) => ({ ...s, countryCode: e.target.value as CountryCode }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+            >
+              <option value="PT">🇵🇹 PT</option>
+              <option value="BR">🇧🇷 BR</option>
+            </select>
+          </div>
+          <div className="flex items-end justify-end gap-2">
+            <button type="button" onClick={() => setFpOpen(false)} className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase">
+              Cancelar
+            </button>
+            <button type="button" onClick={saveFP} className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase">
+              Salvar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL: Fornecedor */}
+      <Modal open={supOpen} title="Adicionar fornecedor" onClose={() => setSupOpen(false)}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Nome</label>
+            <input
+              value={supForm.nome}
+              onChange={(e) => setSupForm((s) => ({ ...s, nome: e.target.value }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              placeholder="Ex.: EDP / Continente / Vodaf..."
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">País</label>
+            <select
+              value={supForm.countryCode || "PT"}
+              onChange={(e) => setSupForm((s) => ({ ...s, countryCode: e.target.value as CountryCode }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+            >
+              <option value="PT">🇵🇹 PT</option>
+              <option value="BR">🇧🇷 BR</option>
+            </select>
+          </div>
+          <div className="flex items-end justify-end gap-2 md:col-span-2">
+            <button type="button" onClick={() => setSupOpen(false)} className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase">
+              Cancelar
+            </button>
+            <button type="button" onClick={saveFornecedor} className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase">
+              Salvar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL: Orçamento */}
+      <Modal open={orcOpen} title="Definir meta (orçamento)" onClose={() => setOrcOpen(false)}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">País</label>
+            <select
+              value={orcForm.countryCode}
+              onChange={(e) => setOrcForm((s) => ({ ...s, countryCode: e.target.value as CountryCode }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+            >
+              <option value="PT">🇵🇹 PT</option>
+              <option value="BR">🇧🇷 BR</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Categoria</label>
+            <select
+              value={orcForm.categoriaId}
+              onChange={(e) => setOrcForm((s) => ({ ...s, categoriaId: e.target.value }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+            >
+              {categorias.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.nome}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Valor</label>
+            <input
+              type="number"
+              value={orcForm.valor}
+              onChange={(e) => setOrcForm((s) => ({ ...s, valor: Number(e.target.value) }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              placeholder="0"
+            />
+          </div>
+          <div className="flex items-end justify-end gap-2">
+            <button type="button" onClick={() => setOrcOpen(false)} className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase">
+              Cancelar
+            </button>
+            <button type="button" onClick={saveOrcamento} className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase">
+              Salvar
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };
