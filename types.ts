@@ -71,6 +71,8 @@ export interface Transacao {
   status: StatusTransacao;
   origem: 'IMPORTACAO' | 'MANUAL';
   recorrencia?: ConfigRecorrencia;
+  recorrencia_grupo_id?: string;
+  recorrencia_seq?: number;
   receipt_id?: string;
   parcela_atual?: number;
   total_parcelas?: number;

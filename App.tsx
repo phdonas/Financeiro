@@ -568,6 +568,8 @@ export default function App() {
             formasPagamento={formasPagamento}
             onSave={onSaveTransacao}
             onDelete={onDeleteTransacao}
+            isCloud={isCloud}
+            householdId={householdId}
           />
         );
       case "calendar":

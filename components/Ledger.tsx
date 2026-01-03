@@ -8,7 +8,7 @@ interface LedgerProps {
   transacoes: Transacao[];
   categorias: CategoriaContabil[];
   formasPagamento: FormaPagamento[];
-  onSave: (t: Transacao) => void;
+  onSave: (t: Transacao) => void | Promise<void>;
   onDelete: (id: string) => void;
   // Sprint 2.8: paginação real via Firestore quando em modo cloud
   isCloud?: boolean;
@@ -45,6 +45,8 @@ const Ledger: React.FC<LedgerProps> = ({
   const [cloudLoading, setCloudLoading] = useState<boolean>(false);
   const [cloudError, setCloudError] = useState<string | null>(null);
   const effectiveHouseholdId = householdId ?? DEFAULT_HOUSEHOLD_ID;
+  const cloudLoadingRef = useRef(false);
+
 
   const filtersHydratedRef = useRef(false);
   const filtersStorageKey = useMemo(() => `phdgesfin:ledgerFilters:${viewMode}`, [viewMode]);
@@ -114,50 +116,57 @@ const periodRange = useMemo(() => {
 }, [yearFilter, monthFilter]);
 
 const fetchCloudPage = useCallback(
-  async (opts?: { reset?: boolean }) => {
+  async (opts?: { reset?: boolean; cursor?: any }) => {
     if (!isCloud) return;
-    if (cloudLoading) return;
-    if (!cloudHasMore && !opts?.reset) return;
+    if (cloudLoadingRef.current) return;
 
+    const isReset = !!opts?.reset;
+    const cursor = isReset ? null : (opts?.cursor ?? null);
+
+    cloudLoadingRef.current = true;
     setCloudLoading(true);
     setCloudError(null);
 
     try {
-      const cursor = opts?.reset ? null : cloudCursor;
       const res = await listTransacoesPage({
         householdId: effectiveHouseholdId,
         viewMode,
         pageSize,
+        periodRange,
         cursor,
-        startDate: periodRange?.startDate,
-        endDate: periodRange?.endDate,
       });
 
-      setCloudTxs((prev) => {
-        const incoming = Array.isArray(res.items) ? (res.items as any[]) : [];
-        if (opts?.reset) return incoming as Transacao[];
-        // merge simples por id (evita duplicar em edge cases)
-        const seen = new Set(prev.map((t) => (t as any)?.id));
-        const merged = [...prev];
-        for (const it of incoming) {
-          if (!it?.id || seen.has(it.id)) continue;
-          merged.push(it as any);
-        }
-        return merged;
-      });
+      const incoming = Array.isArray(res?.items) ? (res.items as any[]) : [];
 
-      setCloudCursor(res.cursor ?? null);
-      setCloudHasMore(!!res.hasMore);
+      if (isReset) {
+        setCloudTxs(incoming as any);
+      } else {
+        setCloudTxs((prev) => {
+          const prevArr = Array.isArray(prev) ? prev : [];
+          const seen = new Set(prevArr.map((t: any) => t?.id).filter(Boolean));
+          const merged = [...prevArr];
+          for (const it of incoming) {
+            if (!it?.id || seen.has(it.id)) continue;
+            merged.push(it as any);
+          }
+          return merged as any;
+        });
+      }
+
+      setCloudCursor(res?.cursor ?? null);
+      setCloudHasMore(!!res?.hasMore);
     } catch (err: any) {
       console.error("Falha ao paginar transações (cloud):", err);
       setCloudError("Falha ao carregar lançamentos do Firestore. Veja o Console (DevTools) para detalhes.");
       setCloudHasMore(false);
     } finally {
+      cloudLoadingRef.current = false;
       setCloudLoading(false);
     }
   },
-  [isCloud, cloudLoading, cloudHasMore, cloudCursor, effectiveHouseholdId, viewMode, pageSize, periodRange]
+  [isCloud, effectiveHouseholdId, viewMode, pageSize, periodRange]
 );
+
 
 // Quando entrar no Ledger (cloud) ou quando filtros principais mudarem: reset + carrega 1ª página
 useEffect(() => {
@@ -168,8 +177,8 @@ useEffect(() => {
   setCloudCursor(null);
   setCloudHasMore(true);
   setCloudTxs([]);
-  fetchCloudPage({ reset: true });
-}, [isCloud, viewMode, monthFilter, yearFilter, pageSize, fetchCloudPage]);
+  fetchCloudPage({ reset: true, cursor: null });
+}, [isCloud, effectiveHouseholdId, viewMode, monthFilter, yearFilter, pageSize, periodRange]);
 
 
   const parseYearMonth = (dateStr?: string) => {
@@ -260,6 +269,8 @@ useEffect(() => {
 
   const [formData, setFormData] = useState<Partial<Transacao>>(initialForm);
 
+  const [saving, setSaving] = useState<boolean>(false);
+
   // Evita crash quando a categoria ainda não está selecionada
   // ou quando dados no Firestore vierem sem a estrutura esperada (contas).
   const contasDaCategoriaSelecionada = useMemo(() => {
@@ -268,50 +279,216 @@ useEffect(() => {
     return categoria?.contas ?? [];
   }, [categorias, formData.categoria_id]);
 
-  const handleSave = (e: React.FormEvent) => {
-    e.preventDefault();
+    const makeId = () => {
+    // @ts-expect-error crypto pode não existir
+    if (typeof crypto !== 'undefined' && (crypto as any).randomUUID) {
+      // @ts-expect-error randomUUID
+      return (crypto as any).randomUUID() as string;
+    }
+    return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  };
 
-    // Hardening: garante recorrência consistente e evita salvar config inválida.
-    const rec = formData.recorrencia;
-    if (rec?.ativo) {
-      if (rec.tipo_frequencia === 'MESES') {
-        const meses = (rec.meses_selecionados ?? []).filter((m) => m >= 1 && m <= 12);
+  const parseISODate = (iso: string) => {
+    const m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec((iso || '').trim());
+    if (!m) return null;
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (!Number.isFinite(y) || !Number.isFinite(mo) || !Number.isFinite(d)) return null;
+    return { y, mo, d };
+  };
+
+  const daysInMonth = (y: number, mo: number) => {
+    // mo: 1-12
+    return new Date(y, mo, 0).getDate();
+  };
+
+  const toISODate = (y: number, mo: number, d: number) => {
+    const dd = Math.max(1, Math.min(d, daysInMonth(y, mo)));
+    const mm = String(mo).padStart(2, '0');
+    const dds = String(dd).padStart(2, '0');
+    return `${y}-${mm}-${dds}`;
+  };
+
+  const estimateDaysOccurrences = (years: number, intervalDays: number) => {
+    const totalDays = Math.max(1, years) * 366;
+    return Math.ceil(totalDays / Math.max(1, intervalDays));
+  };
+
+  const MAX_RECURRENCE_OCCURRENCES = 240;
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (saving) return;
+
+    // Hardening: garante recorrência consistente sem mutar state diretamente
+    const recRaw = formData.recorrencia ?? initialForm.recorrencia!;
+    let normalizedRec = recRaw;
+
+    if (recRaw?.ativo) {
+      if (recRaw.tipo_frequencia === 'MESES') {
+        const meses = (recRaw.meses_selecionados ?? []).filter((m) => m >= 1 && m <= 12);
         if (meses.length === 0) {
-          // UX simples e direta: sem meses selecionados, não prossegue.
           alert('Selecione pelo menos 1 mês para a recorrência.');
           return;
         }
-        formData.recorrencia = {
-          ...rec,
-          meses_selecionados: Array.from(new Set(meses)).sort((a, b) => a - b),
-          vezes_por_ano: meses.length,
+        const unique = Array.from(new Set(meses)).sort((a, b) => a - b);
+        normalizedRec = {
+          ...recRaw,
+          meses_selecionados: unique,
+          vezes_por_ano: unique.length,
+          quantidade_anos: Math.max(1, Number(recRaw.quantidade_anos || 1)),
         };
       } else {
-        // DIAS: mantém o campo numérico (interpretação: intervalo/dias).
-        formData.recorrencia = {
-          ...rec,
+        normalizedRec = {
+          ...recRaw,
           meses_selecionados: [],
-          vezes_por_ano: Math.max(1, Number(rec.vezes_por_ano || 1)),
+          vezes_por_ano: Math.max(1, Number(recRaw.vezes_por_ano || 30)),
+          quantidade_anos: Math.max(1, Number(recRaw.quantidade_anos || 1)),
         };
       }
-
-      formData.recorrencia = {
-        ...formData.recorrencia,
-        quantidade_anos: Math.max(1, Number(formData.recorrencia.quantidade_anos || 1)),
-      };
     }
-    
-    const baseTx = {
-      ...formData,
-      workspace_id: 'fam_01',
-      origem: 'MANUAL',
-      id: editingTxId || Math.random().toString(36).substr(2, 9)
+
+    const closeAndReset = () => {
+      setIsModalOpen(false);
+      setEditingTxId(null);
+      setFormData(initialForm);
     };
 
-    onSave(baseTx as Transacao);
-    setIsModalOpen(false);
-    setEditingTxId(null);
-    setFormData(initialForm);
+    setSaving(true);
+    try {
+      const baseId = editingTxId || makeId();
+
+      const today = new Date().toISOString().split('T')[0];
+      const startISO = (formData.data_competencia || formData.data_prevista_pagamento || today).toString();
+      const parsed = parseISODate(startISO) ?? parseISODate(today)!;
+
+      const baseTx: any = {
+        ...formData,
+        recorrencia: normalizedRec,
+        workspace_id: 'fam_01',
+        origem: 'MANUAL',
+        id: baseId,
+      };
+
+      // Edição: não tentamos regenerar série (fluxo seguro). Apenas atualiza o item.
+      if (editingTxId || !normalizedRec?.ativo) {
+        await Promise.resolve(onSave(baseTx as Transacao));
+        closeAndReset();
+        // refresh simples (cloud) para evitar discrepância visual
+        if (isCloud) {
+          try {
+            setCloudCursor(null);
+            setCloudHasMore(true);
+            setCloudTxs([]);
+            await fetchCloudPage({ reset: true });
+          } catch {}
+        }
+        return;
+      }
+
+      // Criação com recorrência: gera ocorrências adicionais
+      const groupId = `rec_${makeId()}`;
+      const occurrences: any[] = [];
+      let seq = 1;
+
+      occurrences.push({
+        ...baseTx,
+        recorrencia_grupo_id: groupId,
+        recorrencia_seq: seq,
+      });
+
+      const years = Math.max(1, Number(normalizedRec.quantidade_anos || 1));
+      const baseMonth = parsed.mo;
+      const baseYear = parsed.y;
+      const baseDay = parsed.d;
+
+      if (normalizedRec.tipo_frequencia === 'MESES') {
+        const months = (normalizedRec.meses_selecionados ?? [])
+          .filter((m) => m >= 1 && m <= 12)
+          .sort((a, b) => a - b);
+
+        // limite preventivo
+        const estimated = years * months.length;
+        if (estimated > MAX_RECURRENCE_OCCURRENCES) {
+          alert(
+            `Recorrência muito grande (${estimated} ocorrências). Reduza meses/anos para evitar travamento.`
+          );
+          return;
+        }
+
+        for (let yOff = 0; yOff < years; yOff++) {
+          const y = baseYear + yOff;
+          for (const m of months) {
+            // no primeiro ano, só gera a partir do mês base (para evitar criar no "passado")
+            if (yOff === 0 && m < baseMonth) continue;
+            // base já está incluída
+            if (yOff === 0 && m === baseMonth) continue;
+
+            const iso = toISODate(y, m, baseDay);
+            seq += 1;
+            occurrences.push({
+              ...baseTx,
+              id: makeId(),
+              data_competencia: iso,
+              data_prevista_pagamento: iso,
+              recorrencia_grupo_id: groupId,
+              recorrencia_seq: seq,
+            });
+          }
+        }
+      } else {
+        // DIAS: interpreta "vezes_por_ano" como intervalo em dias (ex.: 30)
+        const intervalDays = Math.max(1, Number(normalizedRec.vezes_por_ano || 30));
+        const estimated = estimateDaysOccurrences(years, intervalDays);
+        if (estimated > MAX_RECURRENCE_OCCURRENCES) {
+          alert(
+            `Recorrência muito grande (~${estimated} ocorrências). Aumente o intervalo (dias) ou reduza anos.`
+          );
+          return;
+        }
+
+        const start = new Date(parsed.y, parsed.mo - 1, parsed.d);
+        const end = new Date(parsed.y + years, parsed.mo - 1, parsed.d);
+
+        let cur = new Date(start.getTime());
+        while (true) {
+          cur = new Date(cur.getTime());
+          cur.setDate(cur.getDate() + intervalDays);
+          if (cur >= end) break;
+          const iso = cur.toISOString().split('T')[0];
+          seq += 1;
+          occurrences.push({
+            ...baseTx,
+            id: makeId(),
+            data_competencia: iso,
+            data_prevista_pagamento: iso,
+            recorrencia_grupo_id: groupId,
+            recorrencia_seq: seq,
+          });
+          if (occurrences.length >= MAX_RECURRENCE_OCCURRENCES) break;
+        }
+      }
+
+      // Persiste todas as ocorrências (sequencial para manter previsibilidade no Firestore)
+      for (const tx of occurrences) {
+        await Promise.resolve(onSave(tx as Transacao));
+      }
+
+      closeAndReset();
+
+      // Em cloud, recarrega a 1ª página do período atual para refletir imediatamente
+      if (isCloud) {
+        try {
+          setCloudCursor(null);
+          setCloudHasMore(true);
+          setCloudTxs([]);
+          await fetchCloudPage({ reset: true });
+        } catch {}
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const filteredTxs = useMemo(() => {
@@ -398,7 +575,8 @@ const canLoadMore = isCloud
 
 const handleLoadMore = () => {
   if (isCloud) {
-    fetchCloudPage();
+    if (!cloudHasMore) return;
+    fetchCloudPage({ cursor: cloudCursor });
     return;
   }
   setVisibleCount((prev) => prev + PAGE_SIZE);
@@ -846,7 +1024,13 @@ const handleLoadMore = () => {
                 </div>
                 <div className="flex gap-6 items-center sm:ml-auto">
                    <button type="button" onClick={() => setIsModalOpen(false)} className="text-[11px] font-black uppercase text-gray-400 hover:text-red-500 italic transition-all">Descartar</button>
-                   <button type="submit" className="bg-bb-blue text-white px-12 py-4 rounded-xl text-[12px] font-black uppercase shadow-lg tracking-[0.1em] hover:scale-105 active:scale-95 transition-all">Sincronizar Dados</button>
+                   <button
+                     type="submit"
+                     disabled={saving}
+                     className={`bg-bb-blue text-white px-12 py-4 rounded-xl font-black uppercase text-[11px] transition-all ${saving ? 'opacity-60 cursor-not-allowed' : 'hover:scale-105 active:scale-95'}`}
+                   >
+                     {saving ? 'Salvando...' : 'Sincronizar Dados'}
+                   </button>
                 </div>
              </div>
           </form>
