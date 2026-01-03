@@ -22,9 +22,28 @@ function householdPath(householdId: string = DEFAULT_HOUSEHOLD_ID) {
   return `households/${householdId}`;
 }
 
+/** -------------------- MEMBERSHIP / ROLES -------------------- */
+
+export type MemberRole = "ADMIN" | "EDITOR" | "LEITOR";
+
+export type HouseholdMember = {
+  uid: string;
+  householdId: string;
+  role: MemberRole;
+  active: boolean;
+  email?: string | null;
+  name?: string | null;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+};
+
 /**
- * Garante que o usuário existe como "member" dentro do household.
- * Isso permite regras baseadas em membership sem travar o primeiro acesso.
+ * Garante que o usuário exista como membro do household.
+ * Padrão do projeto: households/{householdId}/members/{uid}
+ *
+ * Observação: este bootstrap é deliberadamente permissivo para evitar "lockout"
+ * (travamento do app) caso as Rules dependam do membership.
+ * Um endurecimento mais forte (convites/join code/ownerUid) entra em sprint posterior.
  */
 export async function ensureHouseholdMember(
   uid: string,
@@ -32,14 +51,33 @@ export async function ensureHouseholdMember(
   extra?: { email?: string | null; name?: string | null }
 ) {
   if (!uid) return;
-  // ✅ Padrão do projeto: membership DENTRO do household
-  // households/{householdId}/members/{uid}
-  const hhRef = doc(db, `${householdPath(householdId)}/members/${uid}`);
+
+  const memberRef = doc(db, `${householdPath(householdId)}/members/${uid}`);
+
+  // Preserva role existente se já existir; senão, cria como ADMIN (bootstrap).
+  let role: MemberRole = "ADMIN";
+  try {
+    const snap = await getDoc(memberRef);
+    if (snap.exists()) {
+      const data = snap.data() as any;
+      if (
+        data?.role === "ADMIN" ||
+        data?.role === "EDITOR" ||
+        data?.role === "LEITOR"
+      ) {
+        role = data.role;
+      }
+    }
+  } catch {
+    // Se falhar leitura, ainda tentamos gravar (pode ser 1º acesso)
+  }
+
   await setDoc(
-    hhRef,
+    memberRef,
     {
       uid,
       householdId,
+      role,
       active: true,
       email: extra?.email ?? null,
       name: extra?.name ?? null,
@@ -49,7 +87,6 @@ export async function ensureHouseholdMember(
     { merge: true }
   );
 }
-
 
 /**
  * Lê storageMode do doc: households/{householdId}/settings/app
@@ -84,13 +121,14 @@ export async function setStorageMode(
   );
 }
 
-/** Helpers genéricos de CRUD em subcoleções do household */
+/** -------------------- GENERIC CRUD (subcollections) -------------------- */
+
 export async function listHouseholdItems<T = any>(
   subcollection: string,
   householdId: string = DEFAULT_HOUSEHOLD_ID
 ): Promise<T[]> {
   const col = collection(db, `${householdPath(householdId)}/${subcollection}`);
-  const q = query(col, orderBy("createdAt", "desc"), limit(500));
+  const q = query(col, orderBy("updatedAt", "desc"), limit(500));
   const snap = await getDocs(q);
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as T[];
 }
@@ -99,10 +137,11 @@ export async function upsertHouseholdItem<T extends { id?: string }>(
   subcollection: string,
   item: T,
   householdId: string = DEFAULT_HOUSEHOLD_ID
-) {
+): Promise<string> {
   const col = collection(db, `${householdPath(householdId)}/${subcollection}`);
   const ref = item.id ? doc(col, item.id) : doc(col);
   const now = Timestamp.now();
+
   await setDoc(
     ref,
     {
@@ -112,6 +151,7 @@ export async function upsertHouseholdItem<T extends { id?: string }>(
     },
     { merge: true }
   );
+
   return ref.id;
 }
 
