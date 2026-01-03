@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Transacao, TipoTransacao, StatusTransacao, CategoriaContabil, FormaPagamento } from '../types';
 
 interface LedgerProps {
@@ -27,6 +27,53 @@ const Ledger: React.FC<LedgerProps> = ({
   // 0 significa "Todos"
   const [monthFilter, setMonthFilter] = useState<number>(0);
   const [yearFilter, setYearFilter] = useState<number>(0);
+  // Sprint 2.6: persistência de filtros + paginação incremental (evita travar com listas grandes)
+  const PAGE_SIZE = 20;
+  const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
+
+  const filtersHydratedRef = useRef(false);
+  const filtersStorageKey = useMemo(() => `phdgesfin:ledgerFilters:${viewMode}`, [viewMode]);
+
+  // Hidrata filtros por viewMode (BR/PT/GLOBAL)
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(filtersStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setCatFilter(typeof parsed?.catFilter === 'string' ? parsed.catFilter : '');
+        setMonthFilter(Number.isFinite(Number(parsed?.monthFilter)) ? Number(parsed.monthFilter) : 0);
+        setYearFilter(Number.isFinite(Number(parsed?.yearFilter)) ? Number(parsed.yearFilter) : 0);
+      } else {
+        setCatFilter('');
+        setMonthFilter(0);
+        setYearFilter(0);
+      }
+    } catch {
+      // Se algo estiver corrompido no storage, zera sem quebrar
+      setCatFilter('');
+      setMonthFilter(0);
+      setYearFilter(0);
+    } finally {
+      filtersHydratedRef.current = true;
+      setVisibleCount(PAGE_SIZE);
+    }
+  }, [filtersStorageKey]);
+
+  // Persiste filtros (após hidratação)
+  useEffect(() => {
+    if (!filtersHydratedRef.current) return;
+    try {
+      localStorage.setItem(filtersStorageKey, JSON.stringify({ catFilter, monthFilter, yearFilter }));
+    } catch {
+      // ignore (storage pode estar bloqueado)
+    }
+  }, [filtersStorageKey, catFilter, monthFilter, yearFilter]);
+
+  // Sempre que filtro muda, volta para primeira página
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [catFilter, monthFilter, yearFilter, viewMode]);
+
 
   const parseYearMonth = (dateStr?: string) => {
     if (!dateStr || typeof dateStr !== 'string') return null;
@@ -198,6 +245,54 @@ const Ledger: React.FC<LedgerProps> = ({
     });
   }, [transacoes, viewMode, catFilter, monthFilter, yearFilter]);
 
+
+  // Sprint 2.6: maps para evitar .find() por linha (performance)
+  const categoriasById = useMemo(() => {
+    const map = new Map<string, CategoriaContabil>();
+    (Array.isArray(categorias) ? categorias : []).forEach((c) => {
+      if (c?.id) map.set(c.id, c);
+    });
+    return map;
+  }, [categorias]);
+
+  const contasById = useMemo(() => {
+    const map = new Map<string, { nome?: string; categoriaNome?: string }>();
+    (Array.isArray(categorias) ? categorias : []).forEach((c) => {
+      const categoriaNome = c?.nome ?? '';
+      const contas = Array.isArray((c as any)?.contas) ? (c as any).contas : [];
+      contas.forEach((ct: any) => {
+        if (ct?.id) map.set(ct.id, { nome: ct?.nome, categoriaNome });
+      });
+    });
+    return map;
+  }, [categorias]);
+
+  const formasById = useMemo(() => {
+    const map = new Map<string, FormaPagamento>();
+    (Array.isArray(formasPagamento) ? formasPagamento : []).forEach((fp) => {
+      if (fp?.id) map.set(fp.id, fp);
+    });
+    return map;
+  }, [formasPagamento]);
+
+  const formatDateBR = (dateStr?: string) => {
+    if (!dateStr || typeof dateStr !== 'string') return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+    if (!m) return '';
+    return `${m[3]}/${m[2]}/${m[1]}`;
+  };
+  const visibleTxs = useMemo(() => {
+    const list = Array.isArray(filteredTxs) ? filteredTxs : [];
+    return list.slice(0, Math.max(PAGE_SIZE, visibleCount));
+  }, [filteredTxs, visibleCount]);
+
+  const canLoadMore = (Array.isArray(filteredTxs) ? filteredTxs.length : 0) > visibleTxs.length;
+
+  const handleLoadMore = () => {
+    setVisibleCount((prev) => prev + PAGE_SIZE);
+  };
+
+
   const stats = useMemo(() => {
     return filteredTxs.reduce((acc, t) => {
       const val = t.valor || 0;
@@ -299,16 +394,16 @@ const Ledger: React.FC<LedgerProps> = ({
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {filteredTxs.map((t) => (
+              {visibleTxs.map((t) => (
                 <tr key={t.id} className={`hover:bg-gray-50 transition-colors group ${t.status === 'ATRASADO' ? 'bg-red-50/20' : ''}`}>
                   <td className="px-6 py-4">
-                    <p className="text-gray-400 font-bold italic">{t.data_competencia?.split('-').reverse().join('/') || t.data_prevista_pagamento.split('-').reverse().join('/')}</p>
-                    <p className="text-[9px] text-bb-blue font-black uppercase tracking-tighter opacity-40">Pago: {t.data_prevista_pagamento.split('-').reverse().join('/')}</p>
+                    <p className="text-gray-400 font-bold italic">{t.data_competencia?.split('-').reverse().join('/') || formatDateBR(t.data_prevista_pagamento) || '-'}</p>
+                    <p className="text-[9px] text-bb-blue font-black uppercase tracking-tighter opacity-40">Pago: {formatDateBR(t.data_prevista_pagamento) || '-'}</p>
                   </td>
                   <td className="px-6 py-4">
-                    <span className="text-bb-blue font-black uppercase text-[10px] block mb-0.5 leading-none">{categorias.find(c => c.id === t.categoria_id)?.nome}</span>
+                    <span className="text-bb-blue font-black uppercase text-[10px] block mb-0.5 leading-none">{categoriasById.get(t.categoria_id)?.nome}</span>
                     <span className="text-gray-400 text-[9px] uppercase italic font-bold leading-none">
-                      🏦 {formasPagamento.find(f => f.id === t.forma_pagamento_id)?.nome || 'Sem Banco'}
+                      🏦 {formasById.get(t.forma_pagamento_id)?.nome || 'Sem Banco'}
                     </span>
                   </td>
                   <td className="px-6 py-4">
@@ -355,6 +450,25 @@ const Ledger: React.FC<LedgerProps> = ({
           </table>
         </div>
       </div>
+
+
+      {/* Sprint 2.6: Paginação incremental */}
+      <div className="flex items-center justify-between px-2">
+        <p className="text-xs text-gray-500">
+          Mostrando <span className="font-semibold">{visibleTxs.length}</span> de <span className="font-semibold">{filteredTxs.length}</span> lançamentos
+        </p>
+
+        {canLoadMore && (
+          <button
+            type="button"
+            onClick={handleLoadMore}
+            className="px-4 py-2 rounded-xl text-sm font-semibold bg-bb-blue text-white hover:opacity-90 transition"
+          >
+            Ver mais
+          </button>
+        )}
+      </div>
+
 
       {isModalOpen && (
         <div className="fixed inset-0 bg-bb-blue/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
