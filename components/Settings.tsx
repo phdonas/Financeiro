@@ -60,6 +60,34 @@ function newId() {
     : "id_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
+// IMPORTANTE: este componente precisa ficar fora do Settings.
+// Quando ele é declarado dentro do componente principal, a cada setState
+// o React entende que é um "novo" componente (nova referência de função),
+// desmonta e monta de novo — e isso faz o input perder foco/cursor.
+type ModalProps = {
+  open: boolean;
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+};
+
+const Modal: React.FC<ModalProps> = React.memo(({ open, title, onClose, children }) => {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-xl bg-white rounded-[2rem] shadow-2xl p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-bb-blue font-black uppercase text-sm">{title}</h3>
+          <button type="button" onClick={onClose} className="px-3 py-1 rounded-xl bg-gray-100 font-black text-xs">
+            Fechar
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+});
+
 const Settings: React.FC<SettingsProps> = ({
   categorias,
   formasPagamento,
@@ -146,28 +174,6 @@ const Settings: React.FC<SettingsProps> = ({
       {label}
     </button>
   );
-
-  const Modal: React.FC<{ open: boolean; title: string; onClose: () => void; children: React.ReactNode }> = ({
-    open,
-    title,
-    onClose,
-    children,
-  }) => {
-    if (!open) return null;
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-        <div className="w-full max-w-xl bg-white rounded-[2rem] shadow-2xl p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-bb-blue font-black uppercase text-sm">{title}</h3>
-            <button type="button" onClick={onClose} className="px-3 py-1 rounded-xl bg-gray-100 font-black text-xs">
-              Fechar
-            </button>
-          </div>
-          {children}
-        </div>
-      </div>
-    );
-  };
 
   return (
     <div className="p-6 space-y-6">
