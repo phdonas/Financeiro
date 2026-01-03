@@ -23,23 +23,43 @@ const Ledger: React.FC<LedgerProps> = ({
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
   const [catFilter, setCatFilter] = useState<string>('');
 
-  // Hardening: stores can briefly return null/unknown while loading; always coerce to arrays.
-  const txList = useMemo<Transacao[]>(() => (Array.isArray(transacoes) ? transacoes : []), [transacoes]);
-  const catList = useMemo<CategoriaContabil[]>(() => (Array.isArray(categorias) ? categorias : []), [categorias]);
-  const fpList = useMemo<FormaPagamento[]>(() => (Array.isArray(formasPagamento) ? formasPagamento : []), [formasPagamento]);
+  // Sprint 2.4: filtros por mês/ano + hardening contra dados incompletos
+  // 0 significa "Todos"
+  const [monthFilter, setMonthFilter] = useState<number>(0);
+  const [yearFilter, setYearFilter] = useState<number>(0);
 
-  const formatDate = (iso?: unknown) => {
-    if (!iso || typeof iso !== 'string') return '—';
-    const parts = iso.split('-');
-    if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
-    return iso;
+  const parseYearMonth = (dateStr?: string) => {
+    if (!dateStr || typeof dateStr !== 'string') return null;
+
+    // Formato esperado: YYYY-MM-DD (string)
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
+    if (m) {
+      const year = Number(m[1]);
+      const month = Number(m[2]);
+      if (Number.isFinite(year) && Number.isFinite(month)) {
+        return { year, month };
+      }
+      return null;
+    }
+
+    // Fallback: tenta parsear por Date()
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) {
+      return { year: d.getFullYear(), month: d.getMonth() + 1 };
+    }
+    return null;
   };
 
-  const asNumber = (v: unknown) => {
-    if (typeof v === 'number' && Number.isFinite(v)) return v;
-    const n = Number(v);
-    return Number.isFinite(n) ? n : 0;
-  };
+  const availableYears = useMemo(() => {
+    const list = Array.isArray(transacoes) ? transacoes : [];
+    const years = new Set<number>();
+    for (const t of list) {
+      const ym = parseYearMonth(t.data_competencia) ?? parseYearMonth(t.data_prevista_pagamento);
+      if (ym?.year) years.add(ym.year);
+    }
+    // Ordena desc
+    return Array.from(years).sort((a, b) => b - a);
+  }, [transacoes]);
 
 
   const MONTHS_PT = useMemo(
@@ -93,10 +113,10 @@ const Ledger: React.FC<LedgerProps> = ({
   // Evita crash quando a categoria ainda não está selecionada
   // ou quando dados no Firestore vierem sem a estrutura esperada (contas).
   const contasDaCategoriaSelecionada = useMemo(() => {
-    const categoria = catList.find((c) => c.id === formData.categoria_id);
+    const categoria = categorias.find((c) => c.id === formData.categoria_id);
     // `contas` deveria existir pelo type, mas pode estar ausente em dados antigos.
     return categoria?.contas ?? [];
-  }, [catList, formData.categoria_id]);
+  }, [categorias, formData.categoria_id]);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -145,12 +165,38 @@ const Ledger: React.FC<LedgerProps> = ({
   };
 
   const filteredTxs = useMemo(() => {
-    return txList.filter(t => {
+    const list = Array.isArray(transacoes) ? transacoes : [];
+
+    const filtered = list.filter((t) => {
       const matchCountry = viewMode === 'GLOBAL' || t.codigo_pais === viewMode;
       const matchCat = !catFilter || t.categoria_id === catFilter;
-      return matchCountry && matchCat;
-    }).sort((a, b) => (b.data_prevista_pagamento ?? '').localeCompare(a.data_prevista_pagamento ?? ''));
-  }, [txList, viewMode, catFilter]);
+
+      // Preferência: data de competência; fallback: prevista de pagamento
+      const ym = parseYearMonth(t.data_competencia) ?? parseYearMonth(t.data_prevista_pagamento);
+      const matchYear = !yearFilter || (ym?.year === yearFilter);
+      const matchMonth = !monthFilter || (ym?.month === monthFilter);
+
+      return matchCountry && matchCat && matchYear && matchMonth;
+    });
+
+    const safeDateKey = (t: Transacao) => {
+      return (t?.data_competencia || t?.data_prevista_pagamento || '').toString();
+    };
+
+    // Ordenação desc por string ISO. Datas vazias/invalidas vão para o fim.
+    return filtered.sort((a, b) => {
+      const da = safeDateKey(a);
+      const db = safeDateKey(b);
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      try {
+        return db.localeCompare(da);
+      } catch {
+        return 0;
+      }
+    });
+  }, [transacoes, viewMode, catFilter, monthFilter, yearFilter]);
 
   const stats = useMemo(() => {
     return filteredTxs.reduce((acc, t) => {
@@ -200,10 +246,43 @@ const Ledger: React.FC<LedgerProps> = ({
              onChange={e => setCatFilter(e.target.value)}
            >
              <option value="">Todas Categorias</option>
-             {catList.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+             {categorias.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+           </select>
+           <select
+             className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase tracking-[0.08em] text-bb-blue/80 appearance-none transition-all duration-200 ease border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+             value={monthFilter}
+             onChange={(e) => setMonthFilter(Number(e.target.value))}
+           >
+             <option value={0}>Todos os meses</option>
+             {MONTHS_PT.map((m) => (
+               <option key={m.value} value={m.value}>{m.label}</option>
+             ))}
+           </select>
+
+           <select
+             className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase tracking-[0.08em] text-bb-blue/80 appearance-none transition-all duration-200 ease border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+             value={yearFilter}
+             onChange={(e) => setYearFilter(Number(e.target.value))}
+           >
+             <option value={0}>Todos os anos</option>
+             {availableYears.map((y) => (
+               <option key={y} value={y}>{y}</option>
+             ))}
            </select>
         </div>
-        <button onClick={() => { setFormData(initialForm); setEditingTxId(null); setIsModalOpen(true); }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all">➕ Novo Lançamento</button>
+        <button onClick={() => {
+          const today = new Date();
+          const y = yearFilter || today.getFullYear();
+          const m = monthFilter || (today.getMonth() + 1);
+          const day = Math.min(today.getDate(), new Date(y, m, 0).getDate());
+          const yyyy = String(y).padStart(4, '0');
+          const mm = String(m).padStart(2, '0');
+          const dd = String(day).padStart(2, '0');
+          const dateStr = `${yyyy}-${mm}-${dd}`;
+          setFormData({ ...initialForm, data_competencia: dateStr, data_prevista_pagamento: dateStr });
+          setEditingTxId(null);
+          setIsModalOpen(true);
+        }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all">➕ Novo Lançamento</button>
       </div>
 
       <div className="bg-white rounded-[1.5rem] shadow-sm border border-gray-100 overflow-hidden">
@@ -223,13 +302,13 @@ const Ledger: React.FC<LedgerProps> = ({
               {filteredTxs.map((t) => (
                 <tr key={t.id} className={`hover:bg-gray-50 transition-colors group ${t.status === 'ATRASADO' ? 'bg-red-50/20' : ''}`}>
                   <td className="px-6 py-4">
-                    <p className="text-gray-400 font-bold italic">{formatDate(t.data_competencia || t.data_prevista_pagamento)}</p>
-                    <p className="text-[9px] text-bb-blue font-black uppercase tracking-tighter opacity-40">Pago: {formatDate(t.data_prevista_pagamento)}</p>
+                    <p className="text-gray-400 font-bold italic">{t.data_competencia?.split('-').reverse().join('/') || t.data_prevista_pagamento.split('-').reverse().join('/')}</p>
+                    <p className="text-[9px] text-bb-blue font-black uppercase tracking-tighter opacity-40">Pago: {t.data_prevista_pagamento.split('-').reverse().join('/')}</p>
                   </td>
                   <td className="px-6 py-4">
-                    <span className="text-bb-blue font-black uppercase text-[10px] block mb-0.5 leading-none">{catList.find(c => c.id === t.categoria_id)?.nome}</span>
+                    <span className="text-bb-blue font-black uppercase text-[10px] block mb-0.5 leading-none">{categorias.find(c => c.id === t.categoria_id)?.nome}</span>
                     <span className="text-gray-400 text-[9px] uppercase italic font-bold leading-none">
-                      🏦 {fpList.find(f => f.id === t.forma_pagamento_id)?.nome || 'Sem Banco'}
+                      🏦 {formasPagamento.find(f => f.id === t.forma_pagamento_id)?.nome || 'Sem Banco'}
                     </span>
                   </td>
                   <td className="px-6 py-4">
@@ -311,14 +390,14 @@ const Ledger: React.FC<LedgerProps> = ({
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Banco / Conta</label>
-                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione banco...</option>{fpList.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
+                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione banco...</option>{formasPagamento.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
                         </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Categoria</label>
-                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione...</option>{catList.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
+                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione...</option>{categorias.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Item Específico</label>
