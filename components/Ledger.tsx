@@ -23,6 +23,25 @@ const Ledger: React.FC<LedgerProps> = ({
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
   const [catFilter, setCatFilter] = useState<string>('');
 
+  // Hardening: stores can briefly return null/unknown while loading; always coerce to arrays.
+  const txList = useMemo<Transacao[]>(() => (Array.isArray(transacoes) ? transacoes : []), [transacoes]);
+  const catList = useMemo<CategoriaContabil[]>(() => (Array.isArray(categorias) ? categorias : []), [categorias]);
+  const fpList = useMemo<FormaPagamento[]>(() => (Array.isArray(formasPagamento) ? formasPagamento : []), [formasPagamento]);
+
+  const formatDate = (iso?: unknown) => {
+    if (!iso || typeof iso !== 'string') return '—';
+    const parts = iso.split('-');
+    if (parts.length === 3) return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    return iso;
+  };
+
+  const asNumber = (v: unknown) => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+
   const MONTHS_PT = useMemo(
     () => [
       { label: 'Jan', value: 1 },
@@ -74,10 +93,10 @@ const Ledger: React.FC<LedgerProps> = ({
   // Evita crash quando a categoria ainda não está selecionada
   // ou quando dados no Firestore vierem sem a estrutura esperada (contas).
   const contasDaCategoriaSelecionada = useMemo(() => {
-    const categoria = categorias.find((c) => c.id === formData.categoria_id);
+    const categoria = catList.find((c) => c.id === formData.categoria_id);
     // `contas` deveria existir pelo type, mas pode estar ausente em dados antigos.
     return categoria?.contas ?? [];
-  }, [categorias, formData.categoria_id]);
+  }, [catList, formData.categoria_id]);
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -126,12 +145,12 @@ const Ledger: React.FC<LedgerProps> = ({
   };
 
   const filteredTxs = useMemo(() => {
-    return transacoes.filter(t => {
+    return txList.filter(t => {
       const matchCountry = viewMode === 'GLOBAL' || t.codigo_pais === viewMode;
       const matchCat = !catFilter || t.categoria_id === catFilter;
       return matchCountry && matchCat;
-    }).sort((a, b) => b.data_prevista_pagamento.localeCompare(a.data_prevista_pagamento));
-  }, [transacoes, viewMode, catFilter]);
+    }).sort((a, b) => (b.data_prevista_pagamento ?? '').localeCompare(a.data_prevista_pagamento ?? ''));
+  }, [txList, viewMode, catFilter]);
 
   const stats = useMemo(() => {
     return filteredTxs.reduce((acc, t) => {
@@ -181,7 +200,7 @@ const Ledger: React.FC<LedgerProps> = ({
              onChange={e => setCatFilter(e.target.value)}
            >
              <option value="">Todas Categorias</option>
-             {categorias.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+             {catList.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
            </select>
         </div>
         <button onClick={() => { setFormData(initialForm); setEditingTxId(null); setIsModalOpen(true); }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all">➕ Novo Lançamento</button>
@@ -204,13 +223,13 @@ const Ledger: React.FC<LedgerProps> = ({
               {filteredTxs.map((t) => (
                 <tr key={t.id} className={`hover:bg-gray-50 transition-colors group ${t.status === 'ATRASADO' ? 'bg-red-50/20' : ''}`}>
                   <td className="px-6 py-4">
-                    <p className="text-gray-400 font-bold italic">{t.data_competencia?.split('-').reverse().join('/') || t.data_prevista_pagamento.split('-').reverse().join('/')}</p>
-                    <p className="text-[9px] text-bb-blue font-black uppercase tracking-tighter opacity-40">Pago: {t.data_prevista_pagamento.split('-').reverse().join('/')}</p>
+                    <p className="text-gray-400 font-bold italic">{formatDate(t.data_competencia || t.data_prevista_pagamento)}</p>
+                    <p className="text-[9px] text-bb-blue font-black uppercase tracking-tighter opacity-40">Pago: {formatDate(t.data_prevista_pagamento)}</p>
                   </td>
                   <td className="px-6 py-4">
-                    <span className="text-bb-blue font-black uppercase text-[10px] block mb-0.5 leading-none">{categorias.find(c => c.id === t.categoria_id)?.nome}</span>
+                    <span className="text-bb-blue font-black uppercase text-[10px] block mb-0.5 leading-none">{catList.find(c => c.id === t.categoria_id)?.nome}</span>
                     <span className="text-gray-400 text-[9px] uppercase italic font-bold leading-none">
-                      🏦 {formasPagamento.find(f => f.id === t.forma_pagamento_id)?.nome || 'Sem Banco'}
+                      🏦 {fpList.find(f => f.id === t.forma_pagamento_id)?.nome || 'Sem Banco'}
                     </span>
                   </td>
                   <td className="px-6 py-4">
@@ -292,14 +311,14 @@ const Ledger: React.FC<LedgerProps> = ({
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Banco / Conta</label>
-                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione banco...</option>{formasPagamento.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
+                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione banco...</option>{fpList.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
                         </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Categoria</label>
-                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione...</option>{categorias.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
+                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione...</option>{catList.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Item Específico</label>
