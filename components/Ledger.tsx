@@ -23,6 +23,24 @@ const Ledger: React.FC<LedgerProps> = ({
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
   const [catFilter, setCatFilter] = useState<string>('');
 
+  const MONTHS_PT = useMemo(
+    () => [
+      { label: 'Jan', value: 1 },
+      { label: 'Fev', value: 2 },
+      { label: 'Mar', value: 3 },
+      { label: 'Abr', value: 4 },
+      { label: 'Mai', value: 5 },
+      { label: 'Jun', value: 6 },
+      { label: 'Jul', value: 7 },
+      { label: 'Ago', value: 8 },
+      { label: 'Set', value: 9 },
+      { label: 'Out', value: 10 },
+      { label: 'Nov', value: 11 },
+      { label: 'Dez', value: 12 },
+    ],
+    []
+  );
+
   const initialForm: Partial<Transacao> = {
     description: '', 
     observacao: '',
@@ -34,13 +52,21 @@ const Ledger: React.FC<LedgerProps> = ({
     categoria_id: '', 
     conta_contabil_id: '', 
     forma_pagamento_id: '',
+    // Default "em aberto"
     status: 'PENDENTE',
     saldo_devedor_restante: 0,
     parcela_atual: 1,
     total_parcelas: 1,
     juros_pagos: 0,
     capital_amortizado: 0,
-    recorrencia: { ativo: false, tipo_frequencia: 'MESES', vezes_por_ano: 1, quantidade_anos: 1, meses_selecionados: [] }
+    recorrencia: {
+      ativo: false,
+      tipo_frequencia: 'MESES',
+      // Para MESES, este campo será derivado automaticamente da seleção de meses.
+      vezes_por_ano: 1,
+      quantidade_anos: 1,
+      meses_selecionados: [],
+    }
   };
 
   const [formData, setFormData] = useState<Partial<Transacao>>(initialForm);
@@ -55,6 +81,36 @@ const Ledger: React.FC<LedgerProps> = ({
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Hardening: garante recorrência consistente e evita salvar config inválida.
+    const rec = formData.recorrencia;
+    if (rec?.ativo) {
+      if (rec.tipo_frequencia === 'MESES') {
+        const meses = (rec.meses_selecionados ?? []).filter((m) => m >= 1 && m <= 12);
+        if (meses.length === 0) {
+          // UX simples e direta: sem meses selecionados, não prossegue.
+          alert('Selecione pelo menos 1 mês para a recorrência.');
+          return;
+        }
+        formData.recorrencia = {
+          ...rec,
+          meses_selecionados: Array.from(new Set(meses)).sort((a, b) => a - b),
+          vezes_por_ano: meses.length,
+        };
+      } else {
+        // DIAS: mantém o campo numérico (interpretação: intervalo/dias).
+        formData.recorrencia = {
+          ...rec,
+          meses_selecionados: [],
+          vezes_por_ano: Math.max(1, Number(rec.vezes_por_ano || 1)),
+        };
+      }
+
+      formData.recorrencia = {
+        ...formData.recorrencia,
+        quantidade_anos: Math.max(1, Number(formData.recorrencia.quantidade_anos || 1)),
+      };
+    }
     
     const baseTx = {
       ...formData,
@@ -172,7 +228,26 @@ const Ledger: React.FC<LedgerProps> = ({
                   </td>
                   <td className="px-6 py-4 text-center">
                     <div className="flex gap-2 justify-center opacity-0 group-hover:opacity-100 transition-all">
-                      <button onClick={() => { setFormData(t); setEditingTxId(t.id); setIsModalOpen(true); }} className="w-8 h-8 bg-bb-blue text-white rounded-lg flex items-center justify-center shadow-md">✏️</button>
+                      <button
+                        onClick={() => {
+                          // Hardening: garante defaults (especialmente recorrência) ao editar dados antigos.
+                          const merged: Partial<Transacao> = {
+                            ...initialForm,
+                            ...t,
+                            recorrencia: {
+                              ...initialForm.recorrencia!,
+                              ...(t.recorrencia ?? {}),
+                              meses_selecionados: (t.recorrencia?.meses_selecionados ?? []),
+                            },
+                          };
+                          setFormData(merged);
+                          setEditingTxId(t.id);
+                          setIsModalOpen(true);
+                        }}
+                        className="w-8 h-8 bg-bb-blue text-white rounded-lg flex items-center justify-center shadow-md"
+                      >
+                        ✏️
+                      </button>
                       <button onClick={() => onDelete(t.id)} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100">✕</button>
                     </div>
                   </td>
@@ -250,27 +325,152 @@ const Ledger: React.FC<LedgerProps> = ({
                     <div className="bg-gray-50/50 p-6 rounded-[1.5rem] border border-gray-100 space-y-6">
                         <div className="flex justify-between items-center border-b border-gray-200 pb-3">
                            <h4 className="text-[11px] font-black text-bb-blue uppercase italic tracking-widest">Recorrência & Parcelas</h4>
-                           <button type="button" onClick={() => setFormData({...formData, recorrencia: { ...formData.recorrencia!, ativo: !formData.recorrencia?.ativo }})} className={`w-10 h-5 rounded-full relative transition-all ${formData.recorrencia?.ativo ? 'bg-bb-blue' : 'bg-gray-300'}`}>
+	                           <button
+	                             type="button"
+	                             onClick={() => {
+	                               const currentRec = formData.recorrencia ?? initialForm.recorrencia!;
+	                               const nextActive = !currentRec.ativo;
+	                               // UX: ao ativar recorrência por MESES, pré-seleciona o mês do lançamento (se ainda vazio).
+	                               const baseMonth = Number((formData.data_prevista_pagamento || new Date().toISOString().split('T')[0]).split('-')[1] || '') || (new Date().getMonth() + 1);
+	                               const meses = currentRec.tipo_frequencia === 'MESES' && (currentRec.meses_selecionados ?? []).length === 0 && nextActive
+	                                 ? [baseMonth]
+	                                 : (currentRec.meses_selecionados ?? []);
+
+	                               setFormData({
+	                                 ...formData,
+	                                 recorrencia: {
+	                                   ...currentRec,
+	                                   ativo: nextActive,
+	                                   meses_selecionados: meses,
+	                                   // para MESES, vezes_por_ano será derivado do tamanho da seleção
+	                                   vezes_por_ano: currentRec.tipo_frequencia === 'MESES' ? (meses.length || 1) : currentRec.vezes_por_ano,
+	                                 },
+	                               });
+	                             }}
+	                             className={`w-10 h-5 rounded-full relative transition-all ${formData.recorrencia?.ativo ? 'bg-bb-blue' : 'bg-gray-300'}`}
+	                           >
                               <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full transition-all ${formData.recorrencia?.ativo ? 'right-0.5' : 'left-0.5'}`}></div>
                            </button>
                         </div>
                         
                         {formData.recorrencia?.ativo && (
-                          <div className="space-y-4 animate-in slide-in-from-top-2">
-                             <div className="grid grid-cols-2 gap-4">
-                                <div className="space-y-1.5">
-                                   <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Frequência</label>
-                                   <select className="w-full bg-white p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.recorrencia?.tipo_frequencia} onChange={e => setFormData({...formData, recorrencia: {...formData.recorrencia!, tipo_frequencia: e.target.value as any}})}>
-                                      <option value="MESES">Mensal</option>
-                                      <option value="DIAS">Dias</option>
-                                   </select>
+                          <div className="space-y-3 animate-in slide-in-from-top-2">
+                            {/* Linha compacta: frequência + duração */}
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="space-y-1">
+                                <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Frequência</label>
+                                <select
+                                  className="w-full bg-white p-2.5 rounded-xl text-[11px] font-black border border-gray-100"
+                                  value={formData.recorrencia?.tipo_frequencia}
+                                  onChange={(e) =>
+                                    setFormData({
+                                      ...formData,
+                                      recorrencia: {
+                                        ...formData.recorrencia!,
+                                        tipo_frequencia: e.target.value as any,
+                                        // Reset de meses ao alternar para DIAS
+                                        meses_selecionados: e.target.value === 'DIAS' ? [] : (formData.recorrencia?.meses_selecionados ?? []),
+                                      },
+                                    })
+                                  }
+                                >
+                                  <option value="MESES">Meses</option>
+                                  <option value="DIAS">Dias</option>
+                                </select>
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Duração (anos)</label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  className="w-full bg-white p-2.5 rounded-xl text-[11px] font-black border border-gray-100"
+                                  value={formData.recorrencia?.quantidade_anos ?? 1}
+                                  onChange={(e) =>
+                                    setFormData({
+                                      ...formData,
+                                      recorrencia: {
+                                        ...formData.recorrencia!,
+                                        quantidade_anos: Number(e.target.value),
+                                      },
+                                    })
+                                  }
+                                />
+                              </div>
+                            </div>
+
+                            {/* MESES: seleção por botões Jan-Dez */}
+                            {formData.recorrencia?.tipo_frequencia === 'MESES' ? (
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                  <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Meses</label>
+                                  <span className="text-[9px] font-black uppercase text-bb-blue/60">
+                                    {((formData.recorrencia?.meses_selecionados ?? []).length || 0)}x/ano
+                                  </span>
                                 </div>
-                                <div className="space-y-1.5">
-                                   <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Repetições</label>
-                                   <input type="number" className="w-full bg-white p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.recorrencia?.vezes_por_ano} onChange={e => setFormData({...formData, recorrencia: {...formData.recorrencia!, vezes_por_ano: Number(e.target.value)}})} />
+                                <div className="grid grid-cols-6 gap-2">
+                                  {MONTHS_PT.map((m) => {
+                                    const selected = (formData.recorrencia?.meses_selecionados ?? []).includes(m.value);
+                                    return (
+                                      <button
+                                        key={m.value}
+                                        type="button"
+                                        onClick={() => {
+                                          const current = formData.recorrencia?.meses_selecionados ?? [];
+                                          const next = selected
+                                            ? current.filter((x) => x !== m.value)
+                                            : [...current, m.value];
+                                          setFormData({
+                                            ...formData,
+                                            recorrencia: {
+                                              ...formData.recorrencia!,
+                                              meses_selecionados: next,
+                                              vezes_por_ano: next.length || 1,
+                                            },
+                                          });
+                                        }}
+                                        className={`py-2 rounded-lg text-[10px] font-black uppercase border transition-all ${
+                                          selected
+                                            ? 'bg-bb-blue text-white border-bb-blue shadow-sm'
+                                            : 'bg-white text-gray-400 border-gray-100 hover:border-bb-blue/20'
+                                        }`}
+                                      >
+                                        {m.label}
+                                      </button>
+                                    );
+                                  })}
                                 </div>
-                             </div>
-                             <p className="text-[8px] text-gray-400 italic font-bold">O sistema criará lançamentos futuros baseados nesta configuração para sua agenda.</p>
+                                <p className="text-[8px] text-gray-400 italic font-bold">
+                                  Selecione os meses em que este lançamento deve ocorrer. Ex.: IMI (Mai/Ago/Nov).
+                                </p>
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                  <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Intervalo (dias)</label>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    className="w-full bg-white p-2.5 rounded-xl text-[11px] font-black border border-gray-100"
+                                    value={formData.recorrencia?.vezes_por_ano ?? 30}
+                                    onChange={(e) =>
+                                      setFormData({
+                                        ...formData,
+                                        recorrencia: {
+                                          ...formData.recorrencia!,
+                                          vezes_por_ano: Number(e.target.value),
+                                        },
+                                      })
+                                    }
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[9px] font-black uppercase text-gray-400 ml-1">Info</label>
+                                  <div className="w-full bg-white p-2.5 rounded-xl text-[10px] font-bold border border-gray-100 text-gray-400">
+                                    Ex.: 30 = mensal aproximado
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -284,14 +484,21 @@ const Ledger: React.FC<LedgerProps> = ({
                 <div className="flex-1 min-w-[300px]">
                    <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2 mb-2 block">Estágio Financeiro Atual</label>
                    <div className="grid grid-cols-4 gap-2">
-                      {['PLANEJADO', 'PENDENTE', 'PAGO', 'ATRASADO'].map((st) => (
+                      {(
+                        [
+                          { value: 'PLANEJADO', label: 'Planejado' },
+                          { value: 'PENDENTE', label: 'Aberto' },
+                          { value: 'PAGO', label: 'Pago' },
+                          { value: 'ATRASADO', label: 'Atrasado' },
+                        ] as Array<{ value: StatusTransacao; label: string }>
+                      ).map((st) => (
                         <button 
-                          key={st}
+                          key={st.value}
                           type="button"
-                          onClick={() => setFormData({...formData, status: st as StatusTransacao})}
-                          className={`py-3 rounded-xl text-[9px] font-black uppercase transition-all border ${formData.status === st ? 'bg-bb-blue text-white border-bb-blue shadow-md' : 'bg-white text-gray-400 border-gray-100 hover:border-bb-blue/20'}`}
+                          onClick={() => setFormData({...formData, status: st.value})}
+                          className={`py-3 rounded-xl text-[9px] font-black uppercase transition-all border ${formData.status === st.value ? 'bg-bb-blue text-white border-bb-blue shadow-md' : 'bg-white text-gray-400 border-gray-100 hover:border-bb-blue/20'}`}
                         >
-                          {st}
+                          {st.label}
                         </button>
                       ))}
                    </div>
