@@ -1,12 +1,24 @@
 import React, { useMemo, useState } from "react";
+import { TipoTransacao } from "../types";
 
 type CountryCode = "PT" | "BR";
+
+type ContaItem = {
+  id: string;
+  nome: string;
+  codigo_pais: CountryCode;
+  fornecedor_padrao?: string;
+  observacao?: string;
+};
 
 type Categoria = {
   id: string;
   nome: string;
   cor?: string;
   countryCode?: CountryCode;
+  // Campos do modelo "novo" (cloud) – usados em Ledger
+  tipo?: TipoTransacao;
+  contas?: ContaItem[];
 };
 
 type FormaPagamentoCategoria = "BANCO" | "CARTAO" | "DINHEIRO";
@@ -106,11 +118,23 @@ const Settings: React.FC<SettingsProps> = ({
 
   // --- Modals state ---
   const [catOpen, setCatOpen] = useState(false);
+  const [selectedCatId, setSelectedCatId] = useState<string>("");
+  const [itemOpen, setItemOpen] = useState(false);
   const [fpOpen, setFpOpen] = useState(false);
   const [supOpen, setSupOpen] = useState(false);
   const [orcOpen, setOrcOpen] = useState(false);
 
-  const [catForm, setCatForm] = useState<Categoria>({ id: "", nome: "", cor: "#1D4ED8", countryCode: "PT" });
+  const [catMode, setCatMode] = useState<"NEW" | "EDIT">("NEW");
+
+  const [catForm, setCatForm] = useState<Categoria>({
+    id: "",
+    nome: "",
+    cor: "#1D4ED8",
+    countryCode: "PT",
+    tipo: TipoTransacao.DESPESA,
+    contas: [],
+  });
+  const [itemForm, setItemForm] = useState<ContaItem>({ id: "", nome: "", codigo_pais: "PT" });
   const [fpForm, setFpForm] = useState<FormaPagamento>({ id: "", nome: "", categoria: "BANCO", countryCode: "PT" });
   const [supForm, setSupForm] = useState<Fornecedor>({ id: "", nome: "", countryCode: "PT" });
   const [orcForm, setOrcForm] = useState<Orcamento>({ id: "", countryCode: "PT", categoriaId: "", valor: 0 });
@@ -121,16 +145,95 @@ const Settings: React.FC<SettingsProps> = ({
     return m;
   }, [categorias]);
 
+  const selectedCategoria = useMemo(() => {
+    if (!selectedCatId) return null;
+    return categorias.find((c) => c.id === selectedCatId) || null;
+  }, [categorias, selectedCatId]);
+
+  const selectedContas: ContaItem[] = useMemo(() => {
+    const contas = (selectedCategoria as any)?.contas;
+    return Array.isArray(contas) ? (contas as ContaItem[]) : [];
+  }, [selectedCategoria]);
+
   // --- Actions ---
   function openNewCategoria() {
-    setCatForm({ id: newId(), nome: "", cor: "#1D4ED8", countryCode: "PT" });
+    setCatMode("NEW");
+    setCatForm({
+      id: newId(),
+      nome: "",
+      cor: (catForm as any)?.cor ?? "#1D4ED8",
+      countryCode: (catForm as any)?.countryCode ?? "PT",
+      tipo: TipoTransacao.DESPESA,
+      contas: [],
+    });
     setCatOpen(true);
   }
+
+  function openEditCategoria(c: Categoria) {
+    setCatMode("EDIT");
+    const contas = Array.isArray((c as any)?.contas) ? ((c as any).contas as ContaItem[]) : [];
+    setCatForm({
+      ...(c as any),
+      id: c.id,
+      nome: c.nome || "",
+      cor: (c as any)?.cor ?? "#1D4ED8",
+      countryCode: (c as any)?.countryCode ?? "PT",
+      tipo: (c as any)?.tipo ?? TipoTransacao.DESPESA,
+      contas,
+    });
+    setCatOpen(true);
+  }
+
   function saveCategoria() {
-    if (!catForm.nome.trim()) return;
-    onSaveCategoria({ ...catForm, nome: catForm.nome.trim() });
+    const nome = catForm.nome.trim();
+    if (!nome) return;
+
+    const contas = Array.isArray((catForm as any)?.contas) ? ((catForm as any).contas as ContaItem[]) : [];
+    const tipo = (catForm as any)?.tipo ?? TipoTransacao.DESPESA;
+
+    onSaveCategoria({ ...(catForm as any), nome, tipo, contas });
     setCatOpen(false);
   }
+
+  function openNewItem(categoryId: string, defaultCountry?: CountryCode) {
+    setSelectedCatId(categoryId);
+    setItemForm({ id: newId(), nome: "", codigo_pais: (defaultCountry || "PT") as CountryCode });
+    setItemOpen(true);
+  }
+
+  function openEditItem(categoryId: string, it: ContaItem) {
+    setSelectedCatId(categoryId);
+    setItemForm({ ...it });
+    setItemOpen(true);
+  }
+
+  function saveItem() {
+    if (!selectedCategoria) return;
+    const nome = itemForm.nome.trim();
+    if (!nome) return;
+
+    const current = selectedContas;
+    const nextItem: ContaItem = { ...itemForm, nome };
+
+    const exists = current.some((x) => x.id === nextItem.id);
+    const nextContas = exists
+      ? current.map((x) => (x.id === nextItem.id ? nextItem : x))
+      : [...current, nextItem];
+
+    onSaveCategoria({ ...(selectedCategoria as any), contas: nextContas });
+    setItemOpen(false);
+  }
+
+  function deleteItem(categoryId: string, itemId: string) {
+    const cat = categorias.find((c) => c.id === categoryId);
+    if (!cat) return;
+
+    const contas = Array.isArray((cat as any)?.contas) ? ((cat as any).contas as ContaItem[]) : [];
+    const nextContas = contas.filter((x) => x.id !== itemId);
+
+    onSaveCategoria({ ...(cat as any), contas: nextContas });
+  }
+
 
   function openNewFP() {
     setFpForm({ id: newId(), nome: "", categoria: "BANCO", countryCode: "PT" });
@@ -193,8 +296,15 @@ const Settings: React.FC<SettingsProps> = ({
       {/* CATEGORIAS */}
       {tab === "CATEGORIAS" && (
         <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xl font-black text-bb-blue uppercase italic">Categorias</h3>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-black text-bb-blue uppercase italic">Categorias</h3>
+              <p className="text-[11px] text-gray-500 font-semibold">
+                Cada categoria pode ter itens (<span className="font-black">Conta/Item</span>) que aparecem no formulário de lançamento.
+                Gerencie os itens dentro de cada card.
+              </p>
+            </div>
+
             <button
               type="button"
               onClick={openNewCategoria}
@@ -204,50 +314,118 @@ const Settings: React.FC<SettingsProps> = ({
             </button>
           </div>
 
-          <div className="overflow-auto">
-            <table className="w-full text-left text-[12px]">
-              <thead className="text-[10px] uppercase text-gray-500">
-                <tr>
-                  <th className="py-2">Nome</th>
-                  <th className="py-2">País</th>
-                  <th className="py-2">Cor</th>
-                  <th className="py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {categorias.map((c) => (
-                  <tr key={c.id} className="border-t">
-                    <td className="py-3 font-semibold">{c.nome}</td>
-                    <td className="py-3">{c.countryCode || "-"}</td>
-                    <td className="py-3">
-                      <span className="inline-flex items-center gap-2">
-                        <span className="w-4 h-4 rounded" style={{ background: c.cor || "#94A3B8" }} />
-                        <span className="text-[11px] text-gray-500">{c.cor || "-"}</span>
-                      </span>
-                    </td>
-                    <td className="py-3 text-right">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {categorias.map((c) => {
+              const contas = Array.isArray((c as any)?.contas) ? ((c as any).contas as ContaItem[]) : [];
+              const tipo = (c as any)?.tipo || "-";
+              const country = ((c as any)?.countryCode || "PT") as CountryCode;
+              const cor = (c as any)?.cor || "#94A3B8";
+
+              return (
+                <div key={c.id} className="rounded-[1.5rem] border bg-gray-50/50 p-5 shadow-sm space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="w-3 h-3 rounded" style={{ background: cor }} />
+                        <h4 className="font-black text-bb-blue uppercase italic truncate">{c.nome}</h4>
+                      </div>
+
+                      <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-600 font-semibold">
+                        <span>
+                          Tipo: <span className="text-gray-900 font-black">{tipo}</span>
+                        </span>
+                        <span>
+                          País: <span className="text-gray-900 font-black">{country}</span>
+                        </span>
+                        <span>
+                          Itens: <span className="text-gray-900 font-black">{contas.length}</span>
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap justify-end">
                       <button
                         type="button"
-                        onClick={() => onDeleteCategoria(c.id)}
+                        onClick={() => openEditCategoria(c)}
+                        className="px-3 py-1 rounded-xl bg-bb-blue/10 text-bb-blue text-[10px] font-black uppercase"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const ok = window.confirm(`Excluir a categoria "${c.nome}"?`);
+                          if (ok) onDeleteCategoria(c.id);
+                        }}
                         className="px-3 py-1 rounded-xl bg-red-50 text-red-700 text-[10px] font-black uppercase"
                       >
                         Excluir
                       </button>
-                    </td>
-                  </tr>
-                ))}
-                {categorias.length === 0 && (
-                  <tr>
-                    <td className="py-6 text-gray-500" colSpan={4}>
-                      Nenhuma categoria cadastrada.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                    </div>
+                  </div>
+
+                  <div className="bg-white rounded-2xl border p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <p className="text-[10px] uppercase text-gray-500 font-black tracking-widest">Itens (Conta/Item)</p>
+                      <button
+                        type="button"
+                        onClick={() => openNewItem(c.id, country)}
+                        className="px-3 py-1 rounded-xl bg-bb-blue text-white text-[10px] font-black uppercase shadow"
+                      >
+                        + Item
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {contas.map((it) => (
+                        <div key={it.id} className="flex items-center justify-between gap-3 border rounded-xl p-3 bg-gray-50">
+                          <div className="min-w-0">
+                            <p className="font-semibold truncate">{it.nome}</p>
+                            <p className="text-[10px] text-gray-500 font-semibold">
+                              {it.codigo_pais}
+                              {it.fornecedor_padrao ? ` • Forn: ${it.fornecedor_padrao}` : ""}
+                              {it.observacao ? ` • ${it.observacao}` : ""}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2 flex-wrap justify-end">
+                            <button
+                              type="button"
+                              onClick={() => openEditItem(c.id, it)}
+                              className="px-3 py-1 rounded-xl bg-bb-blue/10 text-bb-blue text-[10px] font-black uppercase"
+                            >
+                              Editar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const ok = window.confirm(`Excluir o item "${it.nome}"?`);
+                                if (ok) deleteItem(c.id, it.id);
+                              }}
+                              className="px-3 py-1 rounded-xl bg-red-50 text-red-700 text-[10px] font-black uppercase"
+                            >
+                              Excluir
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+
+                      {contas.length === 0 && (
+                        <div className="text-[12px] text-gray-500">Nenhum item cadastrado nesta categoria.</div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
+            {categorias.length === 0 && (
+              <div className="text-gray-500 font-semibold">Nenhuma categoria cadastrada ainda.</div>
+            )}
           </div>
         </div>
       )}
+
 
       {/* PAGAMENTO */}
       {tab === "PAGAMENTO" && (
@@ -410,7 +588,11 @@ const Settings: React.FC<SettingsProps> = ({
       )}
 
       {/* MODAL: Categoria */}
-      <Modal open={catOpen} title="Adicionar categoria" onClose={() => setCatOpen(false)}>
+      <Modal
+        open={catOpen}
+        title={catMode === "NEW" ? "Adicionar categoria" : "Editar categoria"}
+        onClose={() => setCatOpen(false)}
+      >
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="text-[10px] font-black uppercase text-gray-500">Nome</label>
@@ -420,6 +602,19 @@ const Settings: React.FC<SettingsProps> = ({
               className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
               placeholder="Ex.: Alimentação"
             />
+          </div>
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Tipo</label>
+            <select
+              value={((catForm as any)?.tipo as any) || TipoTransacao.DESPESA}
+              onChange={(e) => setCatForm((s) => ({ ...(s as any), tipo: e.target.value as any }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+            >
+              <option value={TipoTransacao.DESPESA}>Despesa</option>
+              <option value={TipoTransacao.RECEITA}>Receita</option>
+              <option value={TipoTransacao.TRANSFERENCIA}>Transferência</option>
+              <option value={TipoTransacao.PAGAMENTO_FATURA}>Pagamento Fatura</option>
+            </select>
           </div>
           <div>
             <label className="text-[10px] font-black uppercase text-gray-500">País</label>
@@ -441,11 +636,80 @@ const Settings: React.FC<SettingsProps> = ({
               className="w-full mt-1 h-12 p-2 rounded-xl border bg-gray-50"
             />
           </div>
-          <div className="flex items-end justify-end gap-2">
+          <div className="flex items-end justify-between gap-2 md:col-span-2 flex-wrap">
+            <div className="text-[11px] text-gray-500 font-semibold">
+              Itens (Conta/Item) são gerenciados diretamente no card da categoria.
+            </div>
+<div className="flex items-end justify-end gap-2 ml-auto">
             <button type="button" onClick={() => setCatOpen(false)} className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase">
               Cancelar
             </button>
             <button type="button" onClick={saveCategoria} className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase">
+              Salvar
+            </button>
+            </div>
+          </div>
+        </div>
+      </Modal>
+
+      
+
+      
+
+      {/* MODAL: Item (conta) */}
+      <Modal
+        open={itemOpen}
+        title={itemForm.id ? "Adicionar/Editar item" : "Adicionar item"}
+        onClose={() => setItemOpen(false)}
+      >
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="md:col-span-2">
+            <label className="text-[10px] font-black uppercase text-gray-500">Nome do item</label>
+            <input
+              value={itemForm.nome}
+              onChange={(e) => setItemForm((s) => ({ ...s, nome: e.target.value }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              placeholder="Ex.: Supermercado / Energia / Gasolina"
+            />
+          </div>
+
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">País</label>
+            <select
+              value={itemForm.codigo_pais}
+              onChange={(e) => setItemForm((s) => ({ ...s, codigo_pais: e.target.value as CountryCode }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+            >
+              <option value="PT">🇵🇹 PT</option>
+              <option value="BR">🇧🇷 BR</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[10px] font-black uppercase text-gray-500">Fornecedor padrão (opcional)</label>
+            <input
+              value={itemForm.fornecedor_padrao || ""}
+              onChange={(e) => setItemForm((s) => ({ ...s, fornecedor_padrao: e.target.value }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              placeholder="Ex.: Continente / EDP"
+            />
+          </div>
+
+          <div className="md:col-span-2">
+            <label className="text-[10px] font-black uppercase text-gray-500">Observação (opcional)</label>
+            <input
+              value={itemForm.observacao || ""}
+              onChange={(e) => setItemForm((s) => ({ ...s, observacao: e.target.value }))}
+              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              placeholder="Ex.: usar sempre cartão X"
+            />
+          </div>
+
+          <div className="flex items-end justify-end gap-2 md:col-span-2">
+            <button type="button" onClick={() => setItemOpen(false)} className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase">
+              Cancelar
+            </button>
+            <button type="button" onClick={saveItem} className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase">
               Salvar
             </button>
           </div>
