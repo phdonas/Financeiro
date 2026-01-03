@@ -25,8 +25,10 @@ const Ledger: React.FC<LedgerProps> = ({
 
   // Sprint 2.4: filtros por mês/ano + hardening contra dados incompletos
   // 0 significa "Todos"
-  const [monthFilter, setMonthFilter] = useState<number>(0);
-  const [yearFilter, setYearFilter] = useState<number>(0);
+    // Filtros de data: default sempre entra no mês/ano atual.
+  // Depois que o usuário altera, persistimos e re-hidratamos ao voltar/recarregar.
+  const [monthFilter, setMonthFilter] = useState<number>(() => new Date().getMonth() + 1);
+    const [yearFilter, setYearFilter] = useState<number>(() => new Date().getFullYear());
   // Sprint 2.6: persistência de filtros + paginação incremental (evita travar com listas grandes)
   const PAGE_SIZE = 20;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
@@ -34,25 +36,58 @@ const Ledger: React.FC<LedgerProps> = ({
   const filtersHydratedRef = useRef(false);
   const filtersStorageKey = useMemo(() => `phdgesfin:ledgerFilters:${viewMode}`, [viewMode]);
 
+  const storageGet = (key: string): string | null => {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      try {
+        return sessionStorage.getItem(key);
+      } catch {
+        return null;
+      }
+    }
+  };
+
+  const storageSet = (key: string, value: string) => {
+    try {
+      localStorage.setItem(key, value);
+      return;
+    } catch {
+      // ignore e tenta session
+    }
+    try {
+      sessionStorage.setItem(key, value);
+    } catch {
+      // ignore
+    }
+  };
+
+
   // Hidrata filtros por viewMode (BR/PT/GLOBAL)
   useEffect(() => {
+    const now = new Date();
+    const defaultMonth = now.getMonth() + 1;
+    const defaultYear = now.getFullYear();
+
     try {
-      const raw = localStorage.getItem(filtersStorageKey);
+      const raw = storageGet(filtersStorageKey);
       if (raw) {
         const parsed = JSON.parse(raw);
         setCatFilter(typeof parsed?.catFilter === 'string' ? parsed.catFilter : '');
-        setMonthFilter(Number.isFinite(Number(parsed?.monthFilter)) ? Number(parsed.monthFilter) : 0);
-        setYearFilter(Number.isFinite(Number(parsed?.yearFilter)) ? Number(parsed.yearFilter) : 0);
+        // Se vier inválido do storage, volta para o default do "agora"
+        setMonthFilter(Number.isFinite(Number(parsed?.monthFilter)) ? Number(parsed.monthFilter) : defaultMonth);
+        setYearFilter(Number.isFinite(Number(parsed?.yearFilter)) ? Number(parsed.yearFilter) : defaultYear);
       } else {
+        // Primeira entrada (sem preferência salva): usa mês/ano atual.
         setCatFilter('');
-        setMonthFilter(0);
-        setYearFilter(0);
+        setMonthFilter(defaultMonth);
+        setYearFilter(defaultYear);
       }
     } catch {
-      // Se algo estiver corrompido no storage, zera sem quebrar
+      // Se algo estiver corrompido no storage, volta para defaults sem quebrar
       setCatFilter('');
-      setMonthFilter(0);
-      setYearFilter(0);
+      setMonthFilter(defaultMonth);
+      setYearFilter(defaultYear);
     } finally {
       filtersHydratedRef.current = true;
       setVisibleCount(PAGE_SIZE);
@@ -63,7 +98,7 @@ const Ledger: React.FC<LedgerProps> = ({
   useEffect(() => {
     if (!filtersHydratedRef.current) return;
     try {
-      localStorage.setItem(filtersStorageKey, JSON.stringify({ catFilter, monthFilter, yearFilter }));
+      storageSet(filtersStorageKey, JSON.stringify({ catFilter, monthFilter, yearFilter }));
     } catch {
       // ignore (storage pode estar bloqueado)
     }
@@ -100,13 +135,21 @@ const Ledger: React.FC<LedgerProps> = ({
   const availableYears = useMemo(() => {
     const list = Array.isArray(transacoes) ? transacoes : [];
     const years = new Set<number>();
+
+    // Anos presentes nas transações
     for (const t of list) {
       const ym = parseYearMonth(t.data_competencia) ?? parseYearMonth(t.data_prevista_pagamento);
       if (ym?.year) years.add(ym.year);
     }
+
+    // Garante que o ano atual e o ano selecionado apareçam no select (mesmo se ainda não houver lançamentos)
+    const nowYear = new Date().getFullYear();
+    years.add(nowYear);
+    if (yearFilter && Number.isFinite(yearFilter)) years.add(yearFilter);
+
     // Ordena desc
     return Array.from(years).sort((a, b) => b - a);
-  }, [transacoes]);
+  }, [transacoes, yearFilter]);
 
 
   const MONTHS_PT = useMemo(
