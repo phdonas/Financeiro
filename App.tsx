@@ -116,7 +116,7 @@ export default function App() {
   const [storageMode, setStorageMode] = useState<StorageMode>(() => {
     return safeJsonParse<StorageMode>(
       localStorage.getItem(lsKey("storageMode")),
-      "local"
+      "cloud"
     );
   });
 
@@ -124,8 +124,9 @@ export default function App() {
     if (!authReady) return;
 
     if (!user) {
-      setStorageMode("local");
-      localStorage.setItem(lsKey("storageMode"), JSON.stringify("local"));
+      // App opera em modo nuvem; sem login, mostramos apenas a tela de entrada.
+      setStorageMode("cloud");
+      localStorage.setItem(lsKey("storageMode"), JSON.stringify("cloud"));
       return;
     }
 
@@ -136,12 +137,19 @@ export default function App() {
     (async () => {
       try {
         const mode = await getStorageMode(householdId);
-        setStorageMode(mode);
-        localStorage.setItem(lsKey("storageMode"), JSON.stringify(mode));
+        // Força cloud como fluxo padrão (mantém fallback interno para debug).
+        if (mode !== "cloud") {
+          await setStorageModeCloud("cloud", householdId);
+          setStorageMode("cloud");
+          localStorage.setItem(lsKey("storageMode"), JSON.stringify("cloud"));
+        } else {
+          setStorageMode("cloud");
+          localStorage.setItem(lsKey("storageMode"), JSON.stringify("cloud"));
+        }
       } catch (e) {
-        console.error("Falha ao ler storageMode (assumindo local):", e);
-        setStorageMode("local");
-        localStorage.setItem(lsKey("storageMode"), JSON.stringify("local"));
+        console.error("Falha ao ler storageMode (assumindo cloud):", e);
+        setStorageMode("cloud");
+        localStorage.setItem(lsKey("storageMode"), JSON.stringify("cloud"));
       }
     })();
   }, [authReady, user, membershipReady, householdId]);
@@ -632,8 +640,8 @@ export default function App() {
         <div className="bg-white shadow-xl rounded-2xl p-8 w-full max-w-md">
           <h1 className="text-xl font-black mb-2">FinanceFamily</h1>
           <p className="text-sm text-gray-600 mb-6">
-            Entre com sua conta Google para acessar os dados na nuvem. Se
-            preferir, você pode usar o modo local após o login.
+            Entre com sua conta Google para acessar seus dados na nuvem.
+            Este app opera em modo nuvem (cloud) por padrão.
           </p>
           <button
             onClick={handleLogin}
@@ -683,21 +691,6 @@ export default function App() {
               ))}
             </div>
 
-            <div className="flex items-center gap-1 bg-gray-100 rounded-full p-1">
-              {(["local", "cloud"] as StorageMode[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setStorageModeSafe(m)}
-                  className={`px-3 py-1 rounded-full text-[11px] font-bold ${
-                    storageMode === m
-                      ? "bg-white shadow"
-                      : "text-gray-600 hover:text-gray-800"
-                  }`}
-                >
-                  {m === "cloud" ? "NUVEM" : "LOCAL"}
-                </button>
-              ))}
-            </div>
           </div>
 
           <div className="flex items-center gap-4">

@@ -98,7 +98,7 @@ export async function getStorageMode(
   const ref = doc(db, `${householdPath(householdId)}/settings/app`);
   const snap = await getDoc(ref);
 
-  if (!snap.exists()) return "local";
+  if (!snap.exists()) return "cloud";
 
   const data = snap.data() as any;
   const mode = data?.storageMode;
