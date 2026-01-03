@@ -6,36 +6,82 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isHouseholdMember(householdId) {
-      return isSignedIn() &&
-        exists(/databases/$(database)/documents/households/$(householdId)/members/$(request.auth.uid));
+    function memberPath(householdId, uid) {
+      return /databases/$(database)/documents/households/$(householdId)/members/$(uid);
     }
 
-    // --- Membership ---
-    // Bootstrap seguro: o próprio usuário pode criar/ler/atualizar seu doc de membership.
+    function isMember(householdId) {
+      return isSignedIn() && exists(memberPath(householdId, request.auth.uid));
+    }
+
+    function isActiveMember(householdId) {
+      return isMember(householdId)
+        && get(memberPath(householdId, request.auth.uid)).data.active == true;
+    }
+
+    function role(householdId) {
+      return isActiveMember(householdId)
+        ? get(memberPath(householdId, request.auth.uid)).data.role
+        : null;
+    }
+
+    function isAdmin(householdId) {
+      return role(householdId) == "ADMIN";
+    }
+
+    function canWrite(householdId) {
+      return isAdmin(householdId) || role(householdId) == "EDITOR";
+    }
+
+    // -------------------- MEMBERSHIP --------------------
+    // households/{householdId}/members/{uid}
     match /households/{householdId}/members/{uid} {
-      allow create: if isSignedIn() && request.auth.uid == uid;
-      allow read: if isSignedIn() && request.auth.uid == uid;
-      allow update: if isSignedIn() && request.auth.uid == uid;
+
+      // Bootstrap: o próprio usuário pode criar seu membership (evita lockout).
+      allow create: if isSignedIn()
+        && request.auth.uid == uid
+        && request.resource.data.uid == uid
+        && request.resource.data.householdId == householdId
+        && request.resource.data.active == true
+        && request.resource.data.role in ["ADMIN", "EDITOR", "LEITOR"];
+
+      // Leitura:
+      // - o próprio usuário lê seu doc
+      // - ADMIN lê docs de membros
+      allow read: if isActiveMember(householdId)
+        && (request.auth.uid == uid || isAdmin(householdId));
+
+      // Atualização:
+      // - o próprio usuário atualiza campos "seguros" (nome/email/active)
+      // - ADMIN atualiza qualquer membro
+      // Proteção: uid/householdId não podem mudar
+      allow update: if isActiveMember(householdId)
+        && (request.auth.uid == uid || isAdmin(householdId))
+        && request.resource.data.uid == uid
+        && request.resource.data.householdId == householdId;
+
       allow delete: if false;
     }
 
-    // --- Settings ---
+    // -------------------- SETTINGS --------------------
     // Doc: households/{householdId}/settings/app
     match /households/{householdId}/settings/{docId} {
-      allow read, write: if isHouseholdMember(householdId);
+      allow read: if isActiveMember(householdId);
+      allow write: if isAdmin(householdId);
     }
 
-    // --- Subcoleções do household ---
+    // -------------------- SUBCOLEÇÕES DO HOUSEHOLD --------------------
     // Ex.: households/{householdId}/transacoes/{id}
     //      households/{householdId}/categorias/{id}
     match /households/{householdId}/{subcollection}/{docId} {
-      allow read, write: if isHouseholdMember(householdId);
+      allow read: if isActiveMember(householdId);
+      allow create, update, delete: if canWrite(householdId);
     }
 
-    // (Opcional) Bloqueia qualquer outra coleção fora do padrão acima
+    // Bloqueia qualquer outra coleção fora do padrão acima
     match /{document=**} {
       allow read, write: if false;
     }
   }
 }
+
