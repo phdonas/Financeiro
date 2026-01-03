@@ -1,6 +1,7 @@
 
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Transacao, TipoTransacao, StatusTransacao, CategoriaContabil, FormaPagamento } from '../types';
+import { listTransacoesPage, DEFAULT_HOUSEHOLD_ID } from '../lib/cloudStore';
 
 interface LedgerProps {
   viewMode: 'BR' | 'PT' | 'GLOBAL';
@@ -9,6 +10,9 @@ interface LedgerProps {
   formasPagamento: FormaPagamento[];
   onSave: (t: Transacao) => void;
   onDelete: (id: string) => void;
+  // Sprint 2.8: paginação real via Firestore quando em modo cloud
+  isCloud?: boolean;
+  householdId?: string;
 }
 
 const Ledger: React.FC<LedgerProps> = ({
@@ -18,6 +22,8 @@ const Ledger: React.FC<LedgerProps> = ({
   formasPagamento = [],
   onSave,
   onDelete,
+  isCloud = false,
+  householdId,
 }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
@@ -25,66 +31,47 @@ const Ledger: React.FC<LedgerProps> = ({
 
   // Sprint 2.4: filtros por mês/ano + hardening contra dados incompletos
   // 0 significa "Todos"
-    // Filtros de data: default sempre entra no mês/ano atual.
-  // Depois que o usuário altera, persistimos e re-hidratamos ao voltar/recarregar.
   const [monthFilter, setMonthFilter] = useState<number>(() => new Date().getMonth() + 1);
-    const [yearFilter, setYearFilter] = useState<number>(() => new Date().getFullYear());
+  const [yearFilter, setYearFilter] = useState<number>(() => new Date().getFullYear());
   // Sprint 2.6: persistência de filtros + paginação incremental (evita travar com listas grandes)
   const PAGE_SIZE = 20;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
 
+  // Sprint 2.8: paginação Firestore (cloud) — carrega 20 iniciais + 'Ver mais'
+  const [pageSize, setPageSize] = useState<number>(20);
+  const [cloudTxs, setCloudTxs] = useState<Transacao[]>([]);
+  const [cloudCursor, setCloudCursor] = useState<any>(null);
+  const [cloudHasMore, setCloudHasMore] = useState<boolean>(true);
+  const [cloudLoading, setCloudLoading] = useState<boolean>(false);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+  const effectiveHouseholdId = householdId ?? DEFAULT_HOUSEHOLD_ID;
+
   const filtersHydratedRef = useRef(false);
   const filtersStorageKey = useMemo(() => `phdgesfin:ledgerFilters:${viewMode}`, [viewMode]);
-
-  const storageGet = (key: string): string | null => {
-    try {
-      return localStorage.getItem(key);
-    } catch {
-      try {
-        return sessionStorage.getItem(key);
-      } catch {
-        return null;
-      }
-    }
-  };
-
-  const storageSet = (key: string, value: string) => {
-    try {
-      localStorage.setItem(key, value);
-      return;
-    } catch {
-      // ignore e tenta session
-    }
-    try {
-      sessionStorage.setItem(key, value);
-    } catch {
-      // ignore
-    }
-  };
-
 
   // Hidrata filtros por viewMode (BR/PT/GLOBAL)
   useEffect(() => {
     const now = new Date();
     const defaultMonth = now.getMonth() + 1;
     const defaultYear = now.getFullYear();
-
     try {
-      const raw = storageGet(filtersStorageKey);
+      const raw = localStorage.getItem(filtersStorageKey);
       if (raw) {
         const parsed = JSON.parse(raw);
         setCatFilter(typeof parsed?.catFilter === 'string' ? parsed.catFilter : '');
-        // Se vier inválido do storage, volta para o default do "agora"
-        setMonthFilter(Number.isFinite(Number(parsed?.monthFilter)) ? Number(parsed.monthFilter) : defaultMonth);
-        setYearFilter(Number.isFinite(Number(parsed?.yearFilter)) ? Number(parsed.yearFilter) : defaultYear);
+        // Se o usuário escolheu 0 (Todos), respeita. Se vier inválido/ausente, cai no default atual.
+        const m = Number(parsed?.monthFilter);
+        const y = Number(parsed?.yearFilter);
+        setMonthFilter(Number.isFinite(m) ? m : defaultMonth);
+        setYearFilter(Number.isFinite(y) ? y : defaultYear);
       } else {
-        // Primeira entrada (sem preferência salva): usa mês/ano atual.
+        // Primeira entrada: default = mês/ano atual
         setCatFilter('');
         setMonthFilter(defaultMonth);
         setYearFilter(defaultYear);
       }
     } catch {
-      // Se algo estiver corrompido no storage, volta para defaults sem quebrar
+      // Storage pode estar bloqueado; ainda assim garantimos um default consistente
       setCatFilter('');
       setMonthFilter(defaultMonth);
       setYearFilter(defaultYear);
@@ -98,7 +85,7 @@ const Ledger: React.FC<LedgerProps> = ({
   useEffect(() => {
     if (!filtersHydratedRef.current) return;
     try {
-      storageSet(filtersStorageKey, JSON.stringify({ catFilter, monthFilter, yearFilter }));
+      localStorage.setItem(filtersStorageKey, JSON.stringify({ catFilter, monthFilter, yearFilter }));
     } catch {
       // ignore (storage pode estar bloqueado)
     }
@@ -108,6 +95,81 @@ const Ledger: React.FC<LedgerProps> = ({
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
   }, [catFilter, monthFilter, yearFilter, viewMode]);
+
+
+// Sprint 2.8: carrega transações por página (Firestore) quando em modo cloud
+
+// Intervalo (start/end) baseado em mês/ano selecionados
+const periodRange = useMemo(() => {
+  if (!yearFilter || !monthFilter) return null;
+  const y = yearFilter;
+  const mth = monthFilter;
+  const mm = String(mth).padStart(2, '0');
+  const startDate = `${y}-${mm}-01`;
+  const nextMonth = mth === 12 ? 1 : mth + 1;
+  const nextYear = mth === 12 ? y + 1 : y;
+  const mm2 = String(nextMonth).padStart(2, '0');
+  const endDate = `${nextYear}-${mm2}-01`;
+  return { startDate, endDate };
+}, [yearFilter, monthFilter]);
+
+const fetchCloudPage = useCallback(
+  async (opts?: { reset?: boolean }) => {
+    if (!isCloud) return;
+    if (cloudLoading) return;
+    if (!cloudHasMore && !opts?.reset) return;
+
+    setCloudLoading(true);
+    setCloudError(null);
+
+    try {
+      const cursor = opts?.reset ? null : cloudCursor;
+      const res = await listTransacoesPage({
+        householdId: effectiveHouseholdId,
+        viewMode,
+        pageSize,
+        cursor,
+        startDate: periodRange?.startDate,
+        endDate: periodRange?.endDate,
+      });
+
+      setCloudTxs((prev) => {
+        const incoming = Array.isArray(res.items) ? (res.items as any[]) : [];
+        if (opts?.reset) return incoming as Transacao[];
+        // merge simples por id (evita duplicar em edge cases)
+        const seen = new Set(prev.map((t) => (t as any)?.id));
+        const merged = [...prev];
+        for (const it of incoming) {
+          if (!it?.id || seen.has(it.id)) continue;
+          merged.push(it as any);
+        }
+        return merged;
+      });
+
+      setCloudCursor(res.cursor ?? null);
+      setCloudHasMore(!!res.hasMore);
+    } catch (err: any) {
+      console.error("Falha ao paginar transações (cloud):", err);
+      setCloudError("Falha ao carregar lançamentos do Firestore. Veja o Console (DevTools) para detalhes.");
+      setCloudHasMore(false);
+    } finally {
+      setCloudLoading(false);
+    }
+  },
+  [isCloud, cloudLoading, cloudHasMore, cloudCursor, effectiveHouseholdId, viewMode, pageSize, periodRange]
+);
+
+// Quando entrar no Ledger (cloud) ou quando filtros principais mudarem: reset + carrega 1ª página
+useEffect(() => {
+  if (!isCloud) return;
+  // evita reset antes de hidratar (quando existe storage)
+  if (!filtersHydratedRef.current) return;
+
+  setCloudCursor(null);
+  setCloudHasMore(true);
+  setCloudTxs([]);
+  fetchCloudPage({ reset: true });
+}, [isCloud, viewMode, monthFilter, yearFilter, pageSize, fetchCloudPage]);
 
 
   const parseYearMonth = (dateStr?: string) => {
@@ -132,24 +194,22 @@ const Ledger: React.FC<LedgerProps> = ({
     return null;
   };
 
-  const availableYears = useMemo(() => {
-    const list = Array.isArray(transacoes) ? transacoes : [];
-    const years = new Set<number>();
 
-    // Anos presentes nas transações
+
+  const availableYears = useMemo(() => {
+    const nowYear = new Date().getFullYear();
+    const base = isCloud ? cloudTxs : transacoes;
+    const list = Array.isArray(base) ? base : [];
+    const years = new Set<number>();
+    // Garante ano atual e ano selecionado (mesmo sem lançamentos)
+    years.add(nowYear);
+    if (yearFilter) years.add(yearFilter);
     for (const t of list) {
       const ym = parseYearMonth(t.data_competencia) ?? parseYearMonth(t.data_prevista_pagamento);
       if (ym?.year) years.add(ym.year);
     }
-
-    // Garante que o ano atual e o ano selecionado apareçam no select (mesmo se ainda não houver lançamentos)
-    const nowYear = new Date().getFullYear();
-    years.add(nowYear);
-    if (yearFilter && Number.isFinite(yearFilter)) years.add(yearFilter);
-
-    // Ordena desc
     return Array.from(years).sort((a, b) => b - a);
-  }, [transacoes, yearFilter]);
+  }, [isCloud, cloudTxs, transacoes, yearFilter]);
 
 
   const MONTHS_PT = useMemo(
@@ -255,7 +315,8 @@ const Ledger: React.FC<LedgerProps> = ({
   };
 
   const filteredTxs = useMemo(() => {
-    const list = Array.isArray(transacoes) ? transacoes : [];
+    const base = isCloud ? cloudTxs : transacoes;
+    const list = Array.isArray(base) ? base : [];
 
     const filtered = list.filter((t) => {
       const matchCountry = viewMode === 'GLOBAL' || t.codigo_pais === viewMode;
@@ -286,7 +347,7 @@ const Ledger: React.FC<LedgerProps> = ({
         return 0;
       }
     });
-  }, [transacoes, viewMode, catFilter, monthFilter, yearFilter]);
+  }, [isCloud, cloudTxs, transacoes, viewMode, catFilter, monthFilter, yearFilter]);
 
 
   // Sprint 2.6: maps para evitar .find() por linha (performance)
@@ -324,16 +385,24 @@ const Ledger: React.FC<LedgerProps> = ({
     if (!m) return '';
     return `${m[3]}/${m[2]}/${m[1]}`;
   };
-  const visibleTxs = useMemo(() => {
-    const list = Array.isArray(filteredTxs) ? filteredTxs : [];
-    return list.slice(0, Math.max(PAGE_SIZE, visibleCount));
-  }, [filteredTxs, visibleCount]);
+const visibleTxs = useMemo(() => {
+  const list = Array.isArray(filteredTxs) ? filteredTxs : [];
+  // Em cloud mode, a própria lista já chega paginada (20 por vez). Não re-slice.
+  if (isCloud) return list;
+  return list.slice(0, Math.max(PAGE_SIZE, visibleCount));
+}, [filteredTxs, visibleCount, isCloud]);
 
-  const canLoadMore = (Array.isArray(filteredTxs) ? filteredTxs.length : 0) > visibleTxs.length;
+const canLoadMore = isCloud
+  ? cloudHasMore
+  : (Array.isArray(filteredTxs) ? filteredTxs.length : 0) > visibleTxs.length;
 
-  const handleLoadMore = () => {
-    setVisibleCount((prev) => prev + PAGE_SIZE);
-  };
+const handleLoadMore = () => {
+  if (isCloud) {
+    fetchCloudPage();
+    return;
+  }
+  setVisibleCount((prev) => prev + PAGE_SIZE);
+};
 
 
   const stats = useMemo(() => {
@@ -497,6 +566,23 @@ const Ledger: React.FC<LedgerProps> = ({
 
       {/* Sprint 2.6: Paginação incremental */}
       <div className="flex items-center justify-between px-2">
+  <div className="flex items-center gap-2">
+    {isCloud && (
+      <>
+        <span className="text-xs text-gray-500">Página</span>
+        <select
+          className="border rounded-lg px-2 py-1 text-xs"
+          value={pageSize}
+          onChange={(e) => setPageSize(Number(e.target.value))}
+        >
+          <option value={20}>20</option>
+          <option value={30}>30</option>
+          <option value={50}>50</option>
+        </select>
+      </>
+    )}
+    {isCloud && cloudError && <span className="text-xs text-red-600">{cloudError}</span>}
+  </div>
         <p className="text-xs text-gray-500">
           Mostrando <span className="font-semibold">{visibleTxs.length}</span> de <span className="font-semibold">{filteredTxs.length}</span> lançamentos
         </p>
@@ -507,7 +593,7 @@ const Ledger: React.FC<LedgerProps> = ({
             onClick={handleLoadMore}
             className="px-4 py-2 rounded-xl text-sm font-semibold bg-bb-blue text-white hover:opacity-90 transition"
           >
-            Ver mais
+            {isCloud && cloudLoading ? 'Carregando...' : 'Ver mais'}
           </button>
         )}
       </div>
