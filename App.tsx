@@ -11,6 +11,7 @@ import Sidebar from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
 import AIAdvisor from "./components/AIAdvisor";
 import Ledger from "./components/Ledger";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import Calendar from "./components/Calendar";
 import Receipts from "./components/Receipts";
 import Investments from "./components/Investments";
@@ -712,7 +713,9 @@ export default function App() {
             {loadingData ? (
               <div className="text-sm text-gray-600">Carregando dados…</div>
             ) : (
-              renderContent()
+              <ErrorBoundary>
+                {renderContent()}
+              </ErrorBoundary>
             )}
           </div>
         </div>

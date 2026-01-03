@@ -11,7 +11,11 @@ import {
   orderBy,
   query,
   setDoc,
+  startAfter,
+  where,
 } from "firebase/firestore";
+
+import type { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
 
 export type StorageMode = "local" | "cloud";
 
@@ -162,4 +166,61 @@ export async function deleteHouseholdItem(
 ) {
   const ref = doc(db, `${householdPath(householdId)}/${subcollection}/${id}`);
   await deleteDoc(ref);
+}
+
+// Sprint 2.8: paginação de transações no Firestore (Ledger)
+// Cursor é o último DocumentSnapshot retornado (para startAfter)
+export type TransacoesCursor = QueryDocumentSnapshot<DocumentData> | null;
+
+export async function listTransacoesPage(params: {
+  householdId?: string;
+  viewMode?: "PT" | "BR" | "GLOBAL";
+  pageSize?: number;
+  cursor?: TransacoesCursor;
+  // Datas em ISO yyyy-mm-dd (mesmo padrão de data_competencia no app)
+  startDate?: string; // inclusive
+  endDate?: string;   // exclusive
+}) {
+  const {
+    householdId = DEFAULT_HOUSEHOLD_ID,
+    viewMode = "GLOBAL",
+    pageSize = 20,
+    cursor = null,
+    startDate,
+    endDate,
+  } = params;
+
+  const col = collection(db, `${householdPath(householdId)}/transacoes`);
+
+  const constraints: any[] = [];
+
+  // Filtro por país (quando não é GLOBAL)
+  if (viewMode !== "GLOBAL") {
+    constraints.push(where("codigo_pais", "==", viewMode));
+  }
+
+  // Filtro por período (opcional)
+  if (startDate && endDate) {
+    constraints.push(where("data_competencia", ">=", startDate));
+    constraints.push(where("data_competencia", "<", endDate));
+  }
+
+  // Ordenação default do Ledger: mais recente → mais antigo
+  // Observação: data_competencia é string ISO, ordenação lexicográfica funciona.
+  constraints.push(orderBy("data_competencia", "desc"));
+  constraints.push(orderBy("__name__", "desc"));
+
+  if (cursor) constraints.push(startAfter(cursor));
+  constraints.push(limit(pageSize));
+
+  const q = query(col, ...constraints);
+  const snap = await getDocs(q);
+
+  const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+  const nextCursor: TransacoesCursor = snap.docs.length
+    ? (snap.docs[snap.docs.length - 1] as any)
+    : null;
+  const hasMore = snap.docs.length === pageSize;
+
+  return { items, cursor: nextCursor, hasMore };
 }
