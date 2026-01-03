@@ -45,6 +45,14 @@ const Ledger: React.FC<LedgerProps> = ({
 
   const [formData, setFormData] = useState<Partial<Transacao>>(initialForm);
 
+  // Evita crash quando a categoria ainda não está selecionada
+  // ou quando dados no Firestore vierem sem a estrutura esperada (contas).
+  const contasDaCategoriaSelecionada = useMemo(() => {
+    const categoria = categorias.find((c) => c.id === formData.categoria_id);
+    // `contas` deveria existir pelo type, mas pode estar ausente em dados antigos.
+    return categoria?.contas ?? [];
+  }, [categorias, formData.categoria_id]);
+
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -220,7 +228,7 @@ const Ledger: React.FC<LedgerProps> = ({
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Item Específico</label>
-                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.conta_contabil_id} onChange={e => setFormData({...formData, conta_contabil_id: e.target.value})}><option value="">Selecione...</option>{categorias.find(c => c.id === formData.categoria_id)?.contas.map(i => <option key={i.id} value={i.id}>{i.nome}</option>)}</select>
+			                  <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.conta_contabil_id} onChange={e => setFormData({...formData, conta_contabil_id: e.target.value})}><option value="">Selecione...</option>{contasDaCategoriaSelecionada.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}</select>
                         </div>
                     </div>
 
