@@ -62,6 +62,8 @@ export interface Transacao {
   categoria_id: string; 
   conta_contabil_id: string; 
   forma_pagamento_id: string;
+  /** Fornecedor (quando aplicável). Sprint 3.3: Recibos propagam para o Lançamento vinculado. */
+  fornecedor_id?: string;
   tipo: TipoTransacao;
   data_competencia: string; 
   data_prevista_pagamento: string;

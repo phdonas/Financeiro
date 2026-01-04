@@ -319,6 +319,34 @@ export default function App() {
     localStorage.setItem(lsKey("exchangeRates"), JSON.stringify(exchangeRates));
   }, [exchangeRates]);
 
+  // Sprint 3.3: default de conta/recebimento para Recibos/Lançamentos vinculados
+  // PT → NB | BR → BB (fallback para 1ª forma de pagamento cadastrada)
+  const getDefaultBankId = useCallback(
+    (country: "PT" | "BR") => {
+      const list = Array.isArray(formasPagamento) ? formasPagamento : [];
+      const upper = (s: any) => String(s ?? "").toUpperCase();
+      const mapped = list.map((fp) => ({ id: fp.id, nome: upper(fp.nome) }));
+      const pick = (pred: (n: string) => boolean) =>
+        mapped.find((x) => pred(x.nome))?.id;
+      if (country === "PT") {
+        return (
+          pick((n) => n.includes("NB")) ||
+          pick((n) => n.includes("NOVO BANCO")) ||
+          list[0]?.id ||
+          ""
+        );
+      }
+      return (
+        pick((n) => n.includes("BANCO DO BRASIL")) ||
+        pick((n) => n === "BB" || n.includes(" BB")) ||
+        pick((n) => n.startsWith("BB ")) ||
+        list[0]?.id ||
+        ""
+      );
+    },
+    [formasPagamento]
+  );
+
   // -------------------- CRUD HELPERS --------------------
   const upsertLocal = useCallback(<T extends { id?: string }>(
     list: T[],
@@ -538,11 +566,17 @@ export default function App() {
       const txId = (r?.transacao_id || `TX_${internalId}`).trim();
       const payDate = (r?.pay_date || r?.issue_date || new Date().toISOString().split("T")[0]).trim();
 
+      const countryCode = (r?.country_code || "PT") as "PT" | "BR";
+      const defaultBankId = getDefaultBankId(countryCode);
+      const resolvedFormaPagamentoId = (r?.forma_pagamento_id || "").trim() || defaultBankId;
+
       const receiptToSave: Receipt = {
         ...r,
         internal_id: internalId,
         transacao_id: txId,
         pay_date: payDate,
+        country_code: countryCode,
+        forma_pagamento_id: resolvedFormaPagamentoId,
       };
 
       const txToSave: Transacao = {
@@ -552,6 +586,8 @@ export default function App() {
         categoria_id: receiptToSave.categoria_id,
         conta_contabil_id: receiptToSave.conta_contabil_id,
         forma_pagamento_id: receiptToSave.forma_pagamento_id,
+        // Sprint 3.3: propaga fornecedor do Recibo para o Lançamento vinculado
+        fornecedor_id: (receiptToSave as any)?.fornecedor_id || "",
         tipo: TipoTransacao.RECEITA,
         data_competencia: payDate,
         data_prevista_pagamento: payDate,
@@ -625,7 +661,7 @@ export default function App() {
       });
       setLedgerRefreshToken((v) => v + 1);
     },
-    [isCloud, householdId]
+    [isCloud, householdId, getDefaultBankId]
   );
 
   const onDeleteReceipt = useCallback(
