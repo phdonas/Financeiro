@@ -1,5 +1,10 @@
-import React, { useState, useMemo } from 'react';
-import { Receipt, Fornecedor, CategoriaContabil, TipoTransacao, FormaPagamento, Transacao } from '../types';
+import React, { useMemo, useState } from "react";
+import type {
+  CategoriaContabil,
+  FormaPagamento,
+  Fornecedor,
+  Receipt,
+} from "../types";
 
 interface ReceiptsProps {
   viewMode: 'BR' | 'PT' | 'GLOBAL';
@@ -7,12 +12,11 @@ interface ReceiptsProps {
   fornecedores: Fornecedor[];
   categorias: CategoriaContabil[];
   formasPagamento: FormaPagamento[];
-  onSave: (r: Receipt) => void;
-  onDelete: (id: string) => void;
-  onSaveTx?: (t: Transacao) => void; 
+  onSaveReceipt: (r: Receipt) => void | Promise<void>;
+  onDeleteReceipt: (internalId: string) => void;
 }
 
-const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, categorias, formasPagamento, onSave, onDelete, onSaveTx }) => {
+const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, categorias, formasPagamento, onSaveReceipt, onDeleteReceipt }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -20,6 +24,7 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
     id: '', 
     country_code: (viewMode === 'GLOBAL' ? 'PT' : viewMode) as 'PT' | 'BR',
     issue_date: new Date().toISOString().split('T')[0],
+    pay_date: new Date().toISOString().split('T')[0],
     base_amount: 0, 
     irs_rate: 11.5, 
     iva_rate: 23, 
@@ -35,7 +40,18 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
     document_url: ''
   };
 
-  const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
+  
+  const supplierCountry = (s: Fornecedor): 'PT' | 'BR' | undefined => {
+    const anyS: any = s as any;
+    return (anyS.countryCode ?? anyS.pais ?? anyS.codigo_pais ?? anyS.country_code) as any;
+  };
+
+  const isPayingSource = (s: Fornecedor): boolean => {
+    const anyS: any = s as any;
+    // Default: se não existir flag, assume true para não esconder fornecedores legados.
+    return anyS.flag_fonte_pagadora !== false;
+  };
+const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
 
   const calcs = useMemo(() => {
     const base = formData.base_amount || 0;
@@ -55,42 +71,51 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
     };
   }, [formData]);
 
-  const handleSave = (e: React.FormEvent) => {
+  const getDefaultBankId = (country: 'PT' | 'BR') => {
+    const list = Array.isArray(formasPagamento) ? formasPagamento : [];
+    const upper = (s: any) => String(s ?? '').toUpperCase();
+    const match = (id: string, nome: string) => ({ id, nome: upper(nome) });
+    const mapped = list.map(fp => match(fp.id, fp.nome));
+    const pick = (pred: (n: string) => boolean) => mapped.find(x => pred(x.nome))?.id;
+    if (country === 'PT') {
+      return (
+        pick(n => n.includes('NB')) ||
+        pick(n => n.includes('NOVO BANCO')) ||
+        list[0]?.id ||
+        ''
+      );
+    }
+    return (
+      pick(n => n.includes('BANCO DO BRASIL')) ||
+      pick(n => n === 'BB' || n.includes(' BB')) ||
+      pick(n => n.startsWith('BB ')) ||
+      list[0]?.id ||
+      ''
+    );
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     const internalId = editingId || Math.random().toString(36).substr(2, 9);
     
     const finalReceipt: Receipt = {
       ...formData as Receipt,
       internal_id: internalId,
+      transacao_id: (formData as any)?.transacao_id || `TX_${internalId}`,
       workspace_id: 'fam_01',
       net_amount: calcs.net,
       received_amount: calcs.received,
       ...(formData.country_code === 'PT' ? { irs_amount: calcs.tax1, iva_amount: calcs.tax2 } : { inss_amount: calcs.tax1, irpf_amount: calcs.tax2 })
     };
 
-    onSave(finalReceipt);
-
-    if (onSaveTx) {
-      onSaveTx({
-        id: `TX_${internalId}`,
-        workspace_id: 'fam_01',
-        codigo_pais: finalReceipt.country_code,
-        categoria_id: finalReceipt.categoria_id,
-        conta_contabil_id: finalReceipt.conta_contabil_id,
-        forma_pagamento_id: finalReceipt.forma_pagamento_id,
-        tipo: TipoTransacao.RECEITA,
-        data_competencia: finalReceipt.issue_date,
-        data_prevista_pagamento: finalReceipt.issue_date,
-        description: `${finalReceipt.description || 'Faturamento'} (#${finalReceipt.id})`,
-        valor: finalReceipt.received_amount,
-        status: finalReceipt.is_paid ? 'PAGO' : 'PENDENTE',
-        origem: 'IMPORTACAO',
-        receipt_id: internalId
-      } as Transacao);
+    try {
+      await Promise.resolve(onSaveReceipt(finalReceipt));
+      setIsModalOpen(false); setEditingId(null); setFormData(initialForm);
+    } catch (err) {
+      console.error('Falha ao salvar recibo:', err);
+      alert('Falha ao salvar o recibo. Veja o Console (DevTools) para detalhes.');
     }
-
-    setIsModalOpen(false); setEditingId(null); setFormData(initialForm);
-  };
+};
 
   return (
     <div className="p-6 space-y-6 pb-24 animate-in fade-in duration-500">
@@ -99,7 +124,18 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
           <h3 className="text-2xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Gestão de Emissões</h3>
           <p className="text-[10px] text-gray-400 font-bold uppercase mt-1 italic tracking-widest">Controle de Impostos e Retenções BR/PT</p>
         </div>
-        <button onClick={() => { setFormData(initialForm); setEditingId(null); setIsModalOpen(true); }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all">🧾 Nova Emissão</button>
+        <button
+          onClick={() => {
+            const c = (initialForm.country_code || 'PT') as 'PT' | 'BR';
+            const defaultBank = getDefaultBankId(c);
+            setFormData({ ...initialForm, forma_pagamento_id: defaultBank });
+            setEditingId(null);
+            setIsModalOpen(true);
+          }}
+          className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all"
+        >
+          🧾 Nova Emissão
+        </button>
       </div>
 
       <div className="bg-white rounded-[1.5rem] shadow-sm border border-gray-100 overflow-hidden">
@@ -145,7 +181,7 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
                     </td>
                     <td className="px-6 py-3 text-center">
                       <span className={`px-4 py-1 rounded-full text-[8px] font-black uppercase tracking-widest ${r.is_paid ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-orange-50 text-orange-600 border border-orange-100'}`}>
-                        {r.is_paid ? 'LIQUIDADO' : 'PENDENTE'}
+                        {r.is_paid ? 'PAGO' : 'PLANEJADO'}
                       </span>
                     </td>
                     <td className="px-6 py-3 text-center">
@@ -154,7 +190,7 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
                           <a href={r.document_url} target="_blank" rel="noreferrer" className="w-8 h-8 bg-gray-50 text-gray-400 rounded-lg flex items-center justify-center border border-gray-100 hover:bg-bb-blue hover:text-white transition-all">🔗</a>
                         )}
                         <button onClick={() => { setEditingId(r.internal_id); setFormData(r); setIsModalOpen(true); }} className="w-8 h-8 bg-bb-blue text-white rounded-lg flex items-center justify-center shadow-md">✏️</button>
-                        <button onClick={() => onDelete(r.internal_id)} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100 transition-all">✕</button>
+                        <button onClick={() => onDeleteReceipt(r.internal_id)} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100 transition-all">✕</button>
                       </div>
                     </td>
                   </tr>
@@ -178,7 +214,7 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
 
              <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
                 <div className="lg:col-span-8 space-y-8">
-                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Nº Recibo/Fatura</label>
                         <input required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100 outline-none" value={formData.id} onChange={e => setFormData({...formData, id: e.target.value})} placeholder="Ref. 2025/001" />
@@ -188,10 +224,46 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
                         <input type="date" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100 outline-none" value={formData.issue_date} onChange={e => setFormData({...formData, issue_date: e.target.value})} />
                       </div>
                       <div className="space-y-1.5">
+                        <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Data Pagamento</label>
+                        <input type="date" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100 outline-none" value={formData.pay_date} onChange={e => setFormData({...formData, pay_date: e.target.value})} />
+                      </div>
+                      <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Regime Fiscal</label>
                         <div className="flex bg-gray-50 p-1 rounded-xl border border-gray-100">
-                           <button type="button" onClick={() => setFormData({...formData, country_code: 'PT'})} className={`flex-1 py-3 rounded-lg text-[10px] font-black uppercase transition-all ${formData.country_code === 'PT' ? 'bg-white text-bb-blue shadow-sm border border-gray-100' : 'text-gray-400'}`}>🇵🇹 PT</button>
-                           <button type="button" onClick={() => setFormData({...formData, country_code: 'BR'})} className={`flex-1 py-3 rounded-lg text-[10px] font-black uppercase transition-all ${formData.country_code === 'BR' ? 'bg-white text-emerald-600 shadow-sm border border-gray-100' : 'text-gray-400'}`}>🇧🇷 BR</button>
+                           <button
+                             type="button"
+                             onClick={() =>
+                               setFormData((prev) => {
+                                 const current = (prev?.country_code || 'PT') as 'PT' | 'BR';
+                                 const next: any = { ...prev, country_code: 'PT' };
+                                 // Default NB para PT (mantém editável)
+                                 if (!prev?.forma_pagamento_id || prev?.forma_pagamento_id === getDefaultBankId(current)) {
+                                   next.forma_pagamento_id = getDefaultBankId('PT');
+                                 }
+                                 return next;
+                               })
+                             }
+                             className={`flex-1 py-3 rounded-lg text-[10px] font-black uppercase transition-all ${formData.country_code === 'PT' ? 'bg-white text-bb-blue shadow-sm border border-gray-100' : 'text-gray-400'}`}
+                           >
+                             🇵🇹 PT
+                           </button>
+                           <button
+                             type="button"
+                             onClick={() =>
+                               setFormData((prev) => {
+                                 const current = (prev?.country_code || 'PT') as 'PT' | 'BR';
+                                 const next: any = { ...prev, country_code: 'BR' };
+                                 // Default BB para BR (mantém editável)
+                                 if (!prev?.forma_pagamento_id || prev?.forma_pagamento_id === getDefaultBankId(current)) {
+                                   next.forma_pagamento_id = getDefaultBankId('BR');
+                                 }
+                                 return next;
+                               })
+                             }
+                             className={`flex-1 py-3 rounded-lg text-[10px] font-black uppercase transition-all ${formData.country_code === 'BR' ? 'bg-white text-emerald-600 shadow-sm border border-gray-100' : 'text-gray-400'}`}
+                           >
+                             🇧🇷 BR
+                           </button>
                         </div>
                       </div>
                    </div>
@@ -199,11 +271,20 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Fornecedor / Pagadora</label>
-                        <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.fornecedor_id} onChange={e => setFormData({...formData, fornecedor_id: e.target.value})}><option value="">Selecione o Fornecedor...</option>{fornecedores.filter(s => s.pais === formData.country_code).map(s => <option key={s.id} value={s.id}>{s.nome}</option>)}</select>
+                        <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.fornecedor_id} onChange={e => {
+                          const fornecedorId = e.target.value;
+                          const fornecedor = fornecedores.find(s => s.id === fornecedorId);
+                          setFormData({
+                            ...formData,
+                            fornecedor_id: fornecedorId,
+                            // Default editável: vem do Fornecedor/Fonte Pagadora.
+                            flag_calcula_premiacao: fornecedor ? !!(fornecedor as any).flag_calcula_premiacao : !!formData.flag_calcula_premiacao,
+                          });
+                        }}><option value="">Selecione o Fornecedor...</option>{fornecedores.filter(s => supplierCountry(s) === formData.country_code).filter(isPayingSource).map(s => <option key={s.id} value={s.id}>{s.nome}</option>)}</select>
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Vínculo Contábil</label>
-                        <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione Categoria...</option>{categorias.filter(c => c.tipo === TipoTransacao.RECEITA).map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
+                        <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione Categoria...</option>{categorias.filter(c => (c as any).tipo === 'RECEITA').map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
                       </div>
                    </div>
 
@@ -246,6 +327,14 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
                 <div className="lg:col-span-4 space-y-6">
                    <div className="bg-gray-50/50 p-6 rounded-[1.5rem] border border-gray-100 space-y-6">
                       <h4 className="text-[11px] font-black text-bb-blue uppercase italic tracking-widest border-b border-gray-200 pb-3">Auditoria Local</h4>
+
+                      <div className="space-y-2">
+                        <label className="text-[9px] font-black uppercase text-gray-400 ml-1 italic">Status do Recebimento</label>
+                        <div className="flex bg-white p-1 rounded-xl border border-gray-100">
+                          <button type="button" onClick={() => setFormData({ ...formData, is_paid: false })} className={`flex-1 py-3 rounded-lg text-[10px] font-black uppercase transition-all ${!formData.is_paid ? 'bg-orange-50 text-orange-600 border border-orange-100' : 'text-gray-400'}`}>Planejado</button>
+                          <button type="button" onClick={() => setFormData({ ...formData, is_paid: true })} className={`flex-1 py-3 rounded-lg text-[10px] font-black uppercase transition-all ${formData.is_paid ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'text-gray-400'}`}>Pago</button>
+                        </div>
+                      </div>
                       
                       <div className="space-y-1.5">
                         <label className="text-[9px] font-black uppercase text-gray-400 ml-1 italic">Link do Documento (Anexo Local/Nuvem)</label>
@@ -264,17 +353,14 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
 
                       <div className="flex items-center justify-between bg-white p-4 rounded-xl border border-gray-100">
                          <div className="flex flex-col">
-                            <span className="text-[10px] font-black uppercase text-bb-blue italic leading-none">Bonificação Fornecedor</span>
-                            <span className="text-[8px] font-bold text-gray-400 uppercase italic">⭐ Ativar Destaque Visual</span>
+                            <span className="text-[10px] font-black uppercase text-bb-blue italic leading-none">Calcula Campanha</span>
+                            <span className="text-[8px] font-bold text-gray-400 uppercase italic">Padrão vem do Fornecedor</span>
                          </div>
                          <button type="button" onClick={() => setFormData({...formData, flag_calcula_premiacao: !formData.flag_calcula_premiacao})} className={`w-12 h-6 rounded-full transition-all relative ${formData.flag_calcula_premiacao ? 'bg-emerald-500' : 'bg-gray-200'}`}>
                             <div className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-all ${formData.flag_calcula_premiacao ? 'right-1' : 'left-1'}`}></div>
                          </button>
                       </div>
 
-                      <button type="button" onClick={() => setFormData({...formData, is_paid: !formData.is_paid})} className={`w-full py-4 rounded-xl text-[10px] font-black uppercase tracking-[0.1em] transition-all shadow-lg ${formData.is_paid ? 'bg-emerald-500 text-white shadow-emerald-500/20' : 'bg-white text-orange-500 border border-orange-200 hover:bg-orange-50'}`}>
-                        {formData.is_paid ? '✓ LIQUIDADO NO BANCO' : 'AGUARDANDO LIQUIDAÇÃO'}
-                      </button>
                    </div>
                 </div>
              </div>
