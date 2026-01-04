@@ -88,6 +88,8 @@ export interface Receipt {
   workspace_id: string;
   country_code: 'PT' | 'BR';
   issue_date: string;
+  /** Data de pagamento/recebimento (quando aplicável). Opcional para compatibilidade retroativa. */
+  pay_date?: string;
   fornecedor_id: string;
   categoria_id: string; 
   conta_contabil_id: string;
@@ -106,6 +108,8 @@ export interface Receipt {
   description: string;
   is_paid: boolean;
   flag_calcula_premiacao: boolean;
+  /** ID da transação vinculada no Ledger (Sprint 3). */
+  transacao_id?: string;
   document_url?: string;
 }
 
