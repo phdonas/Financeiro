@@ -1,10 +1,11 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CategoriaContabil,
   FormaPagamento,
   Fornecedor,
   Receipt,
 } from "../types";
+import { DEFAULT_HOUSEHOLD_ID, listReceiptsPage } from "../lib/cloudStore";
 
 interface ReceiptsProps {
   viewMode: 'BR' | 'PT' | 'GLOBAL';
@@ -14,11 +15,173 @@ interface ReceiptsProps {
   formasPagamento: FormaPagamento[];
   onSaveReceipt: (r: Receipt) => void | Promise<void>;
   onDeleteReceipt: (internalId: string) => void;
+  // Sprint 3.6: paginação/filtros (cloud)
+  isCloud?: boolean;
+  householdId?: string;
+  refreshToken?: number;
 }
 
-const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, categorias, formasPagamento, onSaveReceipt, onDeleteReceipt }) => {
+const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, categorias, formasPagamento, onSaveReceipt, onDeleteReceipt, isCloud = false, householdId, refreshToken = 0 }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Sprint 3.6: filtros + paginação (UI similar ao Ledger)
+  const PAGE_SIZE = 20;
+  const MONTHS_PT = useMemo(
+    () => [
+      { value: 1, label: 'Jan' }, { value: 2, label: 'Fev' }, { value: 3, label: 'Mar' }, { value: 4, label: 'Abr' },
+      { value: 5, label: 'Mai' }, { value: 6, label: 'Jun' }, { value: 7, label: 'Jul' }, { value: 8, label: 'Ago' },
+      { value: 9, label: 'Set' }, { value: 10, label: 'Out' }, { value: 11, label: 'Nov' }, { value: 12, label: 'Dez' },
+    ],
+    []
+  );
+
+  const [monthFilter, setMonthFilter] = useState<number>(() => new Date().getMonth() + 1);
+  const [yearFilter, setYearFilter] = useState<number>(() => new Date().getFullYear());
+  const [fornecedorFilter, setFornecedorFilter] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'PAID' | 'UNPAID'>('ALL');
+
+  // Local (modo local): paginação por slice
+  const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
+
+  // Cloud (modo cloud): paginação real via Firestore
+  const [cloudPageSize] = useState<number>(PAGE_SIZE);
+  const [cloudItems, setCloudItems] = useState<Receipt[]>([]);
+  const [cloudCursor, setCloudCursor] = useState<any>(null);
+  const [cloudHasMore, setCloudHasMore] = useState<boolean>(true);
+  const [cloudLoading, setCloudLoading] = useState<boolean>(false);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+  const effectiveHouseholdId = householdId ?? DEFAULT_HOUSEHOLD_ID;
+  const cloudLoadingRef = useRef(false);
+
+  const filtersHydratedRef = useRef(false);
+  const filtersStorageKey = useMemo(() => `phdgesfin:receiptsFilters:${viewMode}`, [viewMode]);
+
+  // Hidrata filtros por viewMode
+  useEffect(() => {
+    const now = new Date();
+    const defaultMonth = now.getMonth() + 1;
+    const defaultYear = now.getFullYear();
+    try {
+      const raw = localStorage.getItem(filtersStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const m = Number(parsed?.monthFilter);
+        const y = Number(parsed?.yearFilter);
+        setMonthFilter(Number.isFinite(m) ? m : defaultMonth);
+        setYearFilter(Number.isFinite(y) ? y : defaultYear);
+        setFornecedorFilter(typeof parsed?.fornecedorFilter === 'string' ? parsed.fornecedorFilter : '');
+        const st = String(parsed?.statusFilter || 'ALL');
+        setStatusFilter(st === 'PAID' || st === 'UNPAID' ? st : 'ALL');
+      } else {
+        setMonthFilter(defaultMonth);
+        setYearFilter(defaultYear);
+        setFornecedorFilter('');
+        setStatusFilter('ALL');
+      }
+    } catch {
+      setMonthFilter(defaultMonth);
+      setYearFilter(defaultYear);
+      setFornecedorFilter('');
+      setStatusFilter('ALL');
+    } finally {
+      filtersHydratedRef.current = true;
+      setVisibleCount(PAGE_SIZE);
+    }
+  }, [filtersStorageKey]);
+
+  // Persiste filtros
+  useEffect(() => {
+    if (!filtersHydratedRef.current) return;
+    try {
+      localStorage.setItem(
+        filtersStorageKey,
+        JSON.stringify({ monthFilter, yearFilter, fornecedorFilter, statusFilter })
+      );
+    } catch {
+      // ignore
+    }
+  }, [filtersStorageKey, monthFilter, yearFilter, fornecedorFilter, statusFilter]);
+
+  // Sempre que filtro muda, volta para primeira página
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [monthFilter, yearFilter, fornecedorFilter, statusFilter, viewMode]);
+
+  const periodRange = useMemo(() => {
+    if (!yearFilter || !monthFilter) return null;
+    const y = yearFilter;
+    const mth = monthFilter;
+    const mm = String(mth).padStart(2, '0');
+    const startDate = `${y}-${mm}-01`;
+    const nextMonth = mth === 12 ? 1 : mth + 1;
+    const nextYear = mth === 12 ? y + 1 : y;
+    const mm2 = String(nextMonth).padStart(2, '0');
+    const endDate = `${nextYear}-${mm2}-01`;
+    return { startDate, endDate };
+  }, [yearFilter, monthFilter]);
+
+  const fetchCloudPage = useCallback(
+    async (opts?: { reset?: boolean; cursor?: any }) => {
+      if (!isCloud) return;
+      if (cloudLoadingRef.current) return;
+
+      const isReset = !!opts?.reset;
+      const cursor = isReset ? null : (opts?.cursor ?? null);
+
+      cloudLoadingRef.current = true;
+      setCloudLoading(true);
+      setCloudError(null);
+
+      try {
+        const res = await listReceiptsPage({
+          householdId: effectiveHouseholdId,
+          viewMode,
+          pageSize: cloudPageSize,
+          cursor,
+          startDate: periodRange?.startDate,
+          endDate: periodRange?.endDate,
+          fornecedorId: fornecedorFilter || undefined,
+          isPaid: statusFilter === 'ALL' ? null : statusFilter === 'PAID',
+        });
+
+        if (isReset) {
+          setCloudItems(res.items as any);
+        } else {
+          setCloudItems((prev) => [...(Array.isArray(prev) ? prev : []), ...(res.items as any)]);
+        }
+        setCloudCursor(res.cursor as any);
+        setCloudHasMore(!!res.hasMore);
+      } catch (e: any) {
+        console.error('Falha ao paginar recibos (cloud):', e);
+        setCloudError('Falha ao carregar recibos.');
+        setCloudHasMore(false);
+      } finally {
+        setCloudLoading(false);
+        cloudLoadingRef.current = false;
+      }
+    },
+    [
+      isCloud,
+      effectiveHouseholdId,
+      viewMode,
+      cloudPageSize,
+      periodRange,
+      fornecedorFilter,
+      statusFilter,
+    ]
+  );
+
+  // Reset & fetch inicial (cloud)
+  useEffect(() => {
+    if (!isCloud) return;
+    // Aguarda hidratação para evitar disparar duas vezes ao carregar
+    if (!filtersHydratedRef.current) return;
+    setCloudItems([]);
+    setCloudCursor(null);
+    setCloudHasMore(true);
+    fetchCloudPage({ reset: true });
+  }, [isCloud, viewMode, monthFilter, yearFilter, fornecedorFilter, statusFilter, refreshToken, fetchCloudPage]);
 
   const initialForm: Partial<Receipt> = {
     id: '', 
@@ -71,6 +234,20 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
     };
   }, [formData]);
 
+  const itensDaCategoria = useMemo(() => {
+    const catId = String((formData as any)?.categoria_id || '').trim();
+    if (!catId) return [] as any[];
+    const cat: any = categorias.find((c) => c.id === catId);
+    const contas: any[] = Array.isArray(cat?.contas) ? cat.contas : [];
+    const ccode = String((formData as any)?.country_code || (viewMode === 'GLOBAL' ? '' : viewMode) || '').trim();
+    return contas
+      .filter((ct) => {
+        if (!ccode) return true;
+        return !ct?.codigo_pais || String(ct.codigo_pais) === ccode;
+      })
+      .sort((a, b) => String(a?.nome || '').localeCompare(String(b?.nome || ''), 'pt-BR'));
+  }, [categorias, formData.categoria_id, formData.country_code, viewMode]);
+
   const getDefaultBankId = (country: 'PT' | 'BR') => {
     const list = Array.isArray(formasPagamento) ? formasPagamento : [];
     const upper = (s: any) => String(s ?? '').toUpperCase();
@@ -96,6 +273,26 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Regras de validação (Sprint 3): pagamento >= emissão; Item obrigatório
+    const issue = String((formData as any)?.issue_date || '').trim();
+    const pay = String((formData as any)?.pay_date || '').trim();
+    if (issue && pay && pay < issue) {
+      alert('A Data de pagamento deve ser maior ou igual à Data de emissão.');
+      return;
+    }
+
+    const categoriaId = String((formData as any)?.categoria_id || '').trim();
+    const itemId = String((formData as any)?.conta_contabil_id || '').trim();
+    if (!categoriaId) {
+      alert('Selecione uma Categoria.');
+      return;
+    }
+    if (!itemId) {
+      alert('Selecione o Item da Categoria.');
+      return;
+    }
+
     const internalId = editingId || Math.random().toString(36).substr(2, 9);
     
     const finalReceipt: Receipt = {
@@ -117,6 +314,79 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
     }
 };
 
+  const availableYears = useMemo(() => {
+    const now = new Date().getFullYear();
+    const years: number[] = [];
+    for (let y = now; y >= now - 8; y--) years.push(y);
+    return years;
+  }, []);
+
+  const payingSuppliers = useMemo(() => {
+    const list = Array.isArray(fornecedores) ? fornecedores : [];
+    return list
+      .filter((s) => isPayingSource(s))
+      .filter((s) => {
+        if (viewMode === 'GLOBAL') return true;
+        const c = supplierCountry(s);
+        return !c || c === viewMode;
+      })
+      .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
+  }, [fornecedores, viewMode]);
+
+  const baseList = useMemo(() => {
+    return isCloud ? cloudItems : (Array.isArray(receipts) ? receipts : []);
+  }, [isCloud, cloudItems, receipts]);
+
+  // Filtro local (modo local) — cloud já filtra na query
+  const filteredLocal = useMemo(() => {
+    if (isCloud) return baseList;
+    const list = Array.isArray(baseList) ? baseList : [];
+    const p = periodRange;
+    const inPeriod = (d?: string) => {
+      if (!p) return true;
+      const dd = String(d || '');
+      return dd >= p.startDate && dd < p.endDate;
+    };
+    return list.filter((r) => {
+      if (viewMode !== 'GLOBAL' && r.country_code !== viewMode) return false;
+      if (fornecedorFilter && r.fornecedor_id !== fornecedorFilter) return false;
+      if (statusFilter === 'PAID' && !r.is_paid) return false;
+      if (statusFilter === 'UNPAID' && r.is_paid) return false;
+      if (!inPeriod(r.issue_date)) return false;
+      return true;
+    });
+  }, [isCloud, baseList, viewMode, fornecedorFilter, statusFilter, periodRange]);
+
+  const visibleReceipts = useMemo(() => {
+    const list = isCloud ? baseList : filteredLocal;
+    const sorted = (Array.isArray(list) ? list : []).slice().sort((a, b) => {
+      // default: data desc
+      const da = String(a.issue_date || '');
+      const db = String(b.issue_date || '');
+      if (da !== db) return db.localeCompare(da);
+      return String(b.internal_id || '').localeCompare(String(a.internal_id || ''));
+    });
+    return isCloud ? sorted : sorted.slice(0, visibleCount);
+  }, [isCloud, baseList, filteredLocal, visibleCount]);
+
+  const handleDelete = useCallback(
+    (internalId: string) => {
+      const ok = window.confirm('Deseja realmente excluir este Recibo? (O Lançamento vinculado também será excluído)');
+      if (!ok) return;
+      onDeleteReceipt(internalId);
+    },
+    [onDeleteReceipt]
+  );
+
+  const handleLoadMore = useCallback(() => {
+    if (isCloud) {
+      if (!cloudHasMore || cloudLoading) return;
+      fetchCloudPage({ cursor: cloudCursor });
+      return;
+    }
+    setVisibleCount((v) => v + PAGE_SIZE);
+  }, [isCloud, cloudHasMore, cloudLoading, fetchCloudPage, cloudCursor]);
+
   return (
     <div className="p-6 space-y-6 pb-24 animate-in fade-in duration-500">
       <div className="bg-white p-6 rounded-[1.5rem] shadow-sm border border-gray-100 flex flex-wrap justify-between items-center gap-4">
@@ -124,18 +394,67 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
           <h3 className="text-2xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Gestão de Emissões</h3>
           <p className="text-[10px] text-gray-400 font-bold uppercase mt-1 italic tracking-widest">Controle de Impostos e Retenções BR/PT</p>
         </div>
-        <button
-          onClick={() => {
-            const c = (initialForm.country_code || 'PT') as 'PT' | 'BR';
-            const defaultBank = getDefaultBankId(c);
-            setFormData({ ...initialForm, forma_pagamento_id: defaultBank });
-            setEditingId(null);
-            setIsModalOpen(true);
-          }}
-          className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all"
-        >
-          🧾 Nova Emissão
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase tracking-[0.08em] text-bb-blue/80 appearance-none transition-all duration-200 ease border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+            value={monthFilter}
+            onChange={(e) => setMonthFilter(Number(e.target.value))}
+          >
+            <option value={0}>Todos os meses</option>
+            {MONTHS_PT.map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+
+          <select
+            className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase tracking-[0.08em] text-bb-blue/80 appearance-none transition-all duration-200 ease border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+            value={yearFilter}
+            onChange={(e) => setYearFilter(Number(e.target.value))}
+          >
+            <option value={0}>Todos os anos</option>
+            {availableYears.map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+
+          <select
+            className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+            value={fornecedorFilter}
+            onChange={(e) => setFornecedorFilter(e.target.value)}
+          >
+            <option value="">Todos Fornecedores</option>
+            {payingSuppliers.map((s) => (
+              <option key={s.id} value={s.id}>{s.nome}</option>
+            ))}
+          </select>
+
+          <select
+            className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as any)}
+          >
+            <option value="ALL">Todos Status</option>
+            <option value="PAID">Pago</option>
+            <option value="UNPAID">Planejado</option>
+          </select>
+
+          {cloudError && (
+            <span className="text-[10px] font-black text-red-500 uppercase italic">{cloudError}</span>
+          )}
+
+          <button
+            onClick={() => {
+              const c = (initialForm.country_code || 'PT') as 'PT' | 'BR';
+              const defaultBank = getDefaultBankId(c);
+              setFormData({ ...initialForm, forma_pagamento_id: defaultBank });
+              setEditingId(null);
+              setIsModalOpen(true);
+            }}
+            className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all"
+          >
+            🧾 Nova Emissão
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-[1.5rem] shadow-sm border border-gray-100 overflow-hidden">
@@ -145,7 +464,7 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
               <tr>
                 <th className="px-6 py-4">Data / ID</th>
                 <th className="px-6 py-4">Fornecedor</th>
-                <th className="px-6 py-4">Vínculo</th>
+                <th className="px-6 py-4">Categoria</th>
                 <th className="px-6 py-4 text-right">Bruto</th>
                 <th className="px-6 py-4 text-right">Líquido</th>
                 <th className="px-6 py-4 text-center">Status</th>
@@ -153,10 +472,10 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {receipts.length === 0 ? (
-                <tr><td colSpan={7} className="py-12 text-center text-gray-300 font-black uppercase italic opacity-30">Sem registros locais</td></tr>
+              {visibleReceipts.length === 0 ? (
+                <tr><td colSpan={7} className="py-12 text-center text-gray-300 font-black uppercase italic opacity-30">Sem registros</td></tr>
               ) : (
-                receipts.map(r => (
+                visibleReceipts.map(r => (
                   <tr key={r.internal_id} className="hover:bg-gray-50/40 transition-colors group">
                     <td className="px-6 py-3">
                       <span className="text-[10px] text-gray-400 font-bold block">{r.issue_date.split('-').reverse().join('/')}</span>
@@ -190,7 +509,7 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                           <a href={r.document_url} target="_blank" rel="noreferrer" className="w-8 h-8 bg-gray-50 text-gray-400 rounded-lg flex items-center justify-center border border-gray-100 hover:bg-bb-blue hover:text-white transition-all">🔗</a>
                         )}
                         <button onClick={() => { setEditingId(r.internal_id); setFormData(r); setIsModalOpen(true); }} className="w-8 h-8 bg-bb-blue text-white rounded-lg flex items-center justify-center shadow-md">✏️</button>
-                        <button onClick={() => onDeleteReceipt(r.internal_id)} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100 transition-all">✕</button>
+                        <button onClick={() => handleDelete(r.internal_id)} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100 transition-all">✕</button>
                       </div>
                     </td>
                   </tr>
@@ -201,12 +520,24 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
         </div>
       </div>
 
+      <div className="flex justify-center">
+        {(isCloud ? cloudHasMore : (filteredLocal.length > visibleCount)) && (
+          <button
+            onClick={handleLoadMore}
+            disabled={cloudLoading}
+            className="bg-gray-50 text-bb-blue px-8 py-3 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] border border-gray-100 hover:bg-white transition-all disabled:opacity-60"
+          >
+            {cloudLoading ? 'Carregando…' : 'Ver mais'}
+          </button>
+        )}
+      </div>
+
       {isModalOpen && (
         <div className="fixed inset-0 bg-bb-blue/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
           <form onSubmit={handleSave} className="bg-white rounded-[2rem] shadow-2xl w-full max-w-6xl p-10 space-y-8 animate-in zoom-in duration-300 overflow-y-auto max-h-[95vh] scrollbar-hide">
              <div className="flex justify-between items-start border-b border-gray-100 pb-6">
                 <div>
-                  <h2 className="text-2xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Emissão Fiscal Técnica</h2>
+                  <h2 className="text-2xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Novo Recibo/NF</h2>
                   <p className="text-[10px] text-gray-400 font-bold uppercase mt-2 italic tracking-widest">Apuramento de Base e Liquidez</p>
                 </div>
                 <button type="button" onClick={() => setIsModalOpen(false)} className="bg-gray-50 w-10 h-10 rounded-full flex items-center justify-center text-gray-300 hover:text-red-500 transition-all border border-gray-100">✕</button>
@@ -221,11 +552,33 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Data Emissão</label>
-                        <input type="date" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100 outline-none" value={formData.issue_date} onChange={e => setFormData({...formData, issue_date: e.target.value})} />
+                        <input
+                          type="date"
+                          required
+                          className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100 outline-none"
+                          value={formData.issue_date}
+                          onChange={(e) => {
+                            const nextIssue = e.target.value;
+                            setFormData((prev) => {
+                              const next: any = { ...prev, issue_date: nextIssue };
+                              if (next.pay_date && String(next.pay_date) < String(nextIssue)) {
+                                next.pay_date = nextIssue;
+                              }
+                              return next;
+                            });
+                          }}
+                        />
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Data Pagamento</label>
-                        <input type="date" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100 outline-none" value={formData.pay_date} onChange={e => setFormData({...formData, pay_date: e.target.value})} />
+                        <input
+                          type="date"
+                          required
+                          min={formData.issue_date || undefined}
+                          className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100 outline-none"
+                          value={formData.pay_date}
+                          onChange={(e) => setFormData({ ...formData, pay_date: e.target.value })}
+                        />
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Regime Fiscal</label>
@@ -283,8 +636,36 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                         }}><option value="">Selecione o Fornecedor...</option>{fornecedores.filter(s => supplierCountry(s) === formData.country_code).filter(isPayingSource).map(s => <option key={s.id} value={s.id}>{s.nome}</option>)}</select>
                       </div>
                       <div className="space-y-1.5">
-                        <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Vínculo Contábil</label>
-                        <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione Categoria...</option>{categorias.filter(c => (c as any).tipo === 'RECEITA').map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
+                        <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Categoria</label>
+                        <select
+                          required
+                          className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100"
+                          value={formData.categoria_id}
+                          onChange={(e) => setFormData({ ...formData, categoria_id: e.target.value, conta_contabil_id: '' })}
+                        >
+                          <option value="">Selecione uma categoria...</option>
+                          {categorias.filter(c => (c as any).tipo === 'RECEITA').map(c => (
+                            <option key={c.id} value={c.id}>{c.nome}</option>
+                          ))}
+                        </select>
+
+                        <div className="mt-3 space-y-1.5">
+                          <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Item</label>
+                          <select
+                            required
+                            disabled={!formData.categoria_id}
+                            className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100 disabled:opacity-50"
+                            value={formData.conta_contabil_id || ''}
+                            onChange={(e) => setFormData({ ...formData, conta_contabil_id: e.target.value })}
+                          >
+                            <option value="">
+                              {formData.categoria_id ? 'Selecione o item...' : 'Selecione a categoria primeiro'}
+                            </option>
+                            {itensDaCategoria.map((ct: any) => (
+                              <option key={ct.id} value={ct.id}>{ct.nome}</option>
+                            ))}
+                          </select>
+                        </div>
                       </div>
                    </div>
 

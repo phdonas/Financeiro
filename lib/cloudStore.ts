@@ -224,3 +224,167 @@ export async function listTransacoesPage(params: {
 
   return { items, cursor: nextCursor, hasMore };
 }
+
+// Sprint 3.6: paginação de recibos no Firestore (Recibos)
+// Cursor é o último DocumentSnapshot retornado (para startAfter)
+export type ReceiptsCursor = QueryDocumentSnapshot<DocumentData> | null;
+
+export async function listReceiptsPage(params: {
+  householdId?: string;
+  viewMode?: "PT" | "BR" | "GLOBAL";
+  pageSize?: number;
+  cursor?: ReceiptsCursor;
+  // Datas em ISO yyyy-mm-dd (mesmo padrão de issue_date no app)
+  startDate?: string; // inclusive
+  endDate?: string; // exclusive
+  fornecedorId?: string; // equality
+  isPaid?: boolean | null; // null => todos
+}) {
+  const {
+    householdId = DEFAULT_HOUSEHOLD_ID,
+    viewMode = "GLOBAL",
+    pageSize = 20,
+    cursor = null,
+    startDate,
+    endDate,
+    fornecedorId,
+    isPaid = null,
+  } = params;
+
+  const col = collection(db, `${householdPath(householdId)}/receipts`);
+
+  const buildConstraints = (opts: {
+    includeFornecedor?: boolean;
+    includeIsPaid?: boolean;
+    cursor?: ReceiptsCursor | null;
+    limitSize: number;
+  }) => {
+    const constraints: any[] = [];
+
+    // Filtro por país (quando não é GLOBAL)
+    if (viewMode !== "GLOBAL") {
+      constraints.push(where("country_code", "==", viewMode));
+    }
+
+    // Filtro por fornecedor (opcional)
+    if (opts.includeFornecedor && fornecedorId) {
+      constraints.push(where("fornecedor_id", "==", fornecedorId));
+    }
+
+    // Filtro por status (opcional)
+    if (opts.includeIsPaid && (isPaid === true || isPaid === false)) {
+      constraints.push(where("is_paid", "==", isPaid));
+    }
+
+    // Filtro por período (opcional)
+    if (startDate && endDate) {
+      constraints.push(where("issue_date", ">=", startDate));
+      constraints.push(where("issue_date", "<", endDate));
+    }
+
+    // Ordenação default: mais recente → mais antigo
+    // Observação: issue_date é string ISO, ordenação lexicográfica funciona.
+    constraints.push(orderBy("issue_date", "desc"));
+    constraints.push(orderBy("__name__", "desc"));
+
+    if (opts.cursor) constraints.push(startAfter(opts.cursor));
+    constraints.push(limit(opts.limitSize));
+
+    return constraints;
+  };
+
+  // 1) Tentativa "ideal" (server-side filtering)
+  try {
+    const constraints = buildConstraints({
+      includeFornecedor: true,
+      includeIsPaid: true,
+      cursor,
+      limitSize: pageSize,
+    });
+
+    const q = query(col, ...constraints);
+    const snap = await getDocs(q);
+
+    const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+    const nextCursor: ReceiptsCursor = snap.docs.length
+      ? (snap.docs[snap.docs.length - 1] as any)
+      : null;
+    const hasMore = snap.docs.length === pageSize;
+
+    return { items, cursor: nextCursor, hasMore };
+  } catch (e: any) {
+    const msg = String(e?.message || "");
+    const code = String(e?.code || "");
+    const isIndexErr =
+      code === "failed-precondition" ||
+      msg.toLowerCase().includes("requires an index") ||
+      msg.toLowerCase().includes("index");
+
+    if (!isIndexErr) throw e;
+
+    // 2) Fallback: busca com constraints mínimas (sem fornecedor/is_paid) e filtra no cliente.
+    // Motivo: reduzir explosão de índices quando o usuário alterna BR/PT/GLOBAL + filtros.
+    const rawLimit = Math.max(60, pageSize * 3);
+    let out: any[] = [];
+    let nextCursor: ReceiptsCursor = cursor;
+    let hasMore = false;
+
+    // Vamos iterar páginas "brutas" até montar pageSize itens filtrados (ou acabar).
+    // Limite de iterações para não explodir leituras no plano free.
+    const maxIters = 6;
+    let iter = 0;
+
+    while (out.length < pageSize && iter < maxIters) {
+      const constraints = buildConstraints({
+        includeFornecedor: false,
+        includeIsPaid: false,
+        cursor: nextCursor,
+        limitSize: rawLimit,
+      });
+
+      const q = query(col, ...constraints);
+      const snap = await getDocs(q);
+
+      if (!snap.docs.length) {
+        hasMore = false;
+        nextCursor = null;
+        break;
+      }
+
+      // Filtra mantendo snapshot para cursor correto (não pular itens)
+      let filledThisSnap = false;
+      for (let i = 0; i < snap.docs.length; i++) {
+        const docSnap: any = snap.docs[i];
+        const data: any = { id: docSnap.id, ...(docSnap.data() as any) };
+
+        const okFornecedor = !fornecedorId || data?.fornecedor_id === fornecedorId;
+        const okPaid =
+          isPaid === null || isPaid === undefined
+            ? true
+            : Boolean(data?.is_paid) === Boolean(isPaid);
+
+        if (okFornecedor && okPaid) {
+          out.push(data);
+          nextCursor = docSnap as any; // cursor aponta para o último item efetivamente entregue
+          if (out.length >= pageSize) {
+            // ainda há chance de haver mais na mesma página bruta, então hasMore true
+            hasMore = i < snap.docs.length - 1 || snap.docs.length === rawLimit;
+            filledThisSnap = true;
+            break;
+          }
+        }
+      }
+
+      if (filledThisSnap) break;
+
+      // Não preencheu o pageSize ainda: avançar cursor para o final desta página bruta
+      nextCursor = snap.docs[snap.docs.length - 1] as any;
+      hasMore = snap.docs.length === rawLimit;
+      if (!hasMore) break;
+
+      iter++;
+    }
+
+    return { items: out, cursor: nextCursor, hasMore };
+  }
+}
