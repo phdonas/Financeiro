@@ -196,6 +196,7 @@ export default function App() {
   const [transacoes, setTransacoes] = useState<Transacao[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [ledgerRefreshToken, setLedgerRefreshToken] = useState<number>(0);
+  const [receiptsRefreshToken, setReceiptsRefreshToken] = useState<number>(0);
   const [investments, setInvestments] = useState<InvestmentAsset[]>([]);
   const [exchangeRates, setExchangeRates] = useState<
     Record<"PT" | "BR", number>
@@ -660,6 +661,7 @@ export default function App() {
         return [txToSave, ...arr];
       });
       setLedgerRefreshToken((v) => v + 1);
+      setReceiptsRefreshToken((v) => v + 1);
     },
     [isCloud, householdId, getDefaultBankId]
   );
@@ -701,6 +703,7 @@ export default function App() {
         (Array.isArray(prev) ? prev : []).filter((t) => t.id !== linkedTxId)
       );
       setLedgerRefreshToken((v) => v + 1);
+      setReceiptsRefreshToken((v) => v + 1);
     },
     [isCloud, householdId, receipts]
   );
@@ -832,6 +835,9 @@ export default function App() {
             formasPagamento={formasPagamento}
             onSaveReceipt={onSaveReceipt}
             onDeleteReceipt={onDeleteReceipt}
+            isCloud={isCloud}
+            householdId={householdId}
+            refreshToken={receiptsRefreshToken}
           />
         );
       case "investments":
