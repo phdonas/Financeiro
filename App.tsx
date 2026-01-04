@@ -19,7 +19,14 @@ import TaxReports from "./components/TaxReports";
 import ImportSection from "./components/ImportSection";
 import Settings from "./components/Settings";
 
-import { auth } from "./lib/firebase";
+import { auth, db } from "./lib/firebase";
+import {
+  Timestamp,
+  collection,
+  deleteDoc,
+  doc,
+  writeBatch,
+} from "firebase/firestore";
 import {
   DEFAULT_HOUSEHOLD_ID,
   StorageMode,
@@ -40,6 +47,7 @@ import type {
   Receipt,
   InvestmentAsset,
 } from "./types";
+import { TipoTransacao } from "./types";
 
 type ViewMode = "PT" | "BR" | "GLOBAL";
 
@@ -62,6 +70,13 @@ function newId(): string {
     ? crypto.randomUUID()
     : `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
+
+function inferReceiptInternalIdFromTxId(txId: string): string {
+  const id = (txId || "").trim();
+  if (id.startsWith("TX_")) return id.slice(3);
+  return "";
+}
+
 
 export default function App() {
   const householdId = DEFAULT_HOUSEHOLD_ID;
@@ -180,6 +195,7 @@ export default function App() {
   const [orcamentos, setOrcamentos] = useState<Orcamento[]>([]);
   const [transacoes, setTransacoes] = useState<Transacao[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [ledgerRefreshToken, setLedgerRefreshToken] = useState<number>(0);
   const [investments, setInvestments] = useState<InvestmentAsset[]>([]);
   const [exchangeRates, setExchangeRates] = useState<
     Record<"PT" | "BR", number>
@@ -342,22 +358,97 @@ export default function App() {
   // -------------------- HANDLERS --------------------
   const onSaveTransacao = useCallback(
     async (t: Transacao) => {
+      // Salva o Lançamento normalmente
+      let savedTx: Transacao = t;
+
       if (isCloud) {
-        const saved = await upsertCloud<Transacao>("transacoes", t);
-        setTransacoes((prev) => upsertLocal(prev, saved));
+        savedTx = await upsertCloud<Transacao>("transacoes", t);
+        setTransacoes((prev) => upsertLocal(prev, savedTx));
       } else {
         setTransacoes((prev) => upsertLocal(prev, t));
       }
+
+      // Sprint 3.2+: Se este lançamento estiver vinculado a um Recibo, sincroniza de volta (bidirecional)
+      const receiptId =
+        ((savedTx as any)?.receipt_id || "").trim() ||
+        inferReceiptInternalIdFromTxId(savedTx.id);
+
+      if (!receiptId) return;
+
+      const isPaid = (savedTx.status || "") === "PAGO";
+      const payDate = (savedTx.data_prevista_pagamento || savedTx.data_competencia || "").trim();
+
+      // Atualiza estado local de Recibos (sem mexer em valores/cálculos já existentes)
+      setReceipts((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        const idx = arr.findIndex((r) => (r as any)?.internal_id === receiptId);
+        if (idx < 0) return arr;
+        const copy = arr.slice();
+        copy[idx] = {
+          ...(copy[idx] as any),
+          transacao_id: savedTx.id,
+          is_paid: isPaid,
+          pay_date: payDate || (copy[idx] as any)?.pay_date,
+        };
+        return copy;
+      });
+
+      if (isCloud) {
+        const receiptsCol = collection(db, `households/${householdId}/receipts`);
+        const receiptRef = doc(receiptsCol, receiptId);
+        const batch = writeBatch(db);
+        batch.set(
+          receiptRef,
+          {
+            transacao_id: savedTx.id,
+            is_paid: isPaid,
+            ...(payDate ? { pay_date: payDate } : {}),
+            updatedAt: Timestamp.now(),
+          } as any,
+          { merge: true }
+        );
+        await batch.commit();
+      }
     },
-    [isCloud, upsertCloud, upsertLocal]
+    [isCloud, upsertCloud, upsertLocal, householdId]
   );
 
   const onDeleteTransacao = useCallback(
     async (id: string) => {
-      if (isCloud) await deleteCloud("transacoes", id);
-      setTransacoes((prev) => deleteLocal(prev, id));
+      const txId = (id || "").trim();
+      if (!txId) return;
+
+      // Tenta descobrir Recibo vinculado (estado local primeiro; fallback por padrão TX_<internal_id>)
+      const receiptId =
+        (Array.isArray(transacoes) ? transacoes : []).find((t) => t.id === txId)?.receipt_id ||
+        inferReceiptInternalIdFromTxId(txId);
+
+      if (isCloud) {
+        if (receiptId) {
+          const receiptsCol = collection(db, `households/${householdId}/receipts`);
+          const txCol = collection(db, `households/${householdId}/transacoes`);
+          const receiptRef = doc(receiptsCol, receiptId);
+          const txRef = doc(txCol, txId);
+          const batch = writeBatch(db);
+          batch.delete(txRef);
+          batch.delete(receiptRef);
+          await batch.commit();
+        } else {
+          await deleteCloud("transacoes", txId);
+        }
+      }
+
+      // Estado local
+      setTransacoes((prev) => deleteLocal(prev, txId));
+      if (receiptId) {
+        setReceipts((prev) =>
+          (Array.isArray(prev) ? prev : []).filter(
+            (r) => (r as any)?.internal_id !== receiptId
+          )
+        );
+      }
     },
-    [isCloud, deleteCloud, deleteLocal]
+    [isCloud, deleteCloud, deleteLocal, householdId, transacoes]
   );
 
   const onSaveCategoria = useCallback(
@@ -442,22 +533,140 @@ export default function App() {
 
   const onSaveReceipt = useCallback(
     async (r: Receipt) => {
+      // Sprint 3.2+: Recibo sempre cria/atualiza um Lançamento (RECEITA) vinculado
+      const internalId = (r?.internal_id || "").trim() || newId();
+      const txId = (r?.transacao_id || `TX_${internalId}`).trim();
+      const payDate = (r?.pay_date || r?.issue_date || new Date().toISOString().split("T")[0]).trim();
+
+      const receiptToSave: Receipt = {
+        ...r,
+        internal_id: internalId,
+        transacao_id: txId,
+        pay_date: payDate,
+      };
+
+      const txToSave: Transacao = {
+        id: txId,
+        workspace_id: r?.workspace_id || "fam_01",
+        codigo_pais: receiptToSave.country_code,
+        categoria_id: receiptToSave.categoria_id,
+        conta_contabil_id: receiptToSave.conta_contabil_id,
+        forma_pagamento_id: receiptToSave.forma_pagamento_id,
+        tipo: TipoTransacao.RECEITA,
+        data_competencia: payDate,
+        data_prevista_pagamento: payDate,
+        description:
+          (receiptToSave.description || "Recibo") +
+          (receiptToSave.id ? ` (#${receiptToSave.id})` : ""),
+        valor: Number(receiptToSave.received_amount ?? receiptToSave.net_amount ?? 0),
+        status: receiptToSave.is_paid ? "PAGO" : "PLANEJADO",
+        origem: "MANUAL",
+        receipt_id: internalId,
+      };
+
       if (isCloud) {
-        const saved = await upsertCloud<Receipt>("receipts", r);
-        setReceipts((prev) => upsertLocal(prev, saved));
-      } else {
-        setReceipts((prev) => upsertLocal(prev, r));
+        const now = Timestamp.now();
+        const receiptsCol = collection(
+          db,
+          `households/${householdId}/receipts`
+        );
+        const txCol = collection(db, `households/${householdId}/transacoes`);
+        const receiptRef = doc(receiptsCol, internalId);
+        const txRef = doc(txCol, txId);
+
+        const batch = writeBatch(db);
+        batch.set(
+          receiptRef,
+          {
+            ...receiptToSave,
+            // Mantém "id" como número fiscal do recibo dentro do documento.
+            // O docId no Firestore é o internal_id (seguro, sem "/").
+            updatedAt: now,
+            createdAt: now,
+          } as any,
+          { merge: true }
+        );
+        batch.set(
+          txRef,
+          {
+            ...txToSave,
+            updatedAt: now,
+            createdAt: now,
+          } as any,
+          { merge: true }
+        );
+        await batch.commit();
       }
+
+      // Estado local (sempre) — chave real do Recibo é internal_id
+      setReceipts((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        const idx = arr.findIndex(
+          (x) => (x as any)?.internal_id === internalId
+        );
+        if (idx >= 0) {
+          const copy = arr.slice();
+          copy[idx] = receiptToSave;
+          return copy;
+        }
+        return [receiptToSave, ...arr];
+      });
+
+      // Mantém transações em memória/localStorage (mesmo em cloud, para calendário/dashboards).
+      setTransacoes((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        const idx = arr.findIndex((x) => x.id === txId);
+        if (idx >= 0) {
+          const copy = arr.slice();
+          copy[idx] = txToSave;
+          return copy;
+        }
+        return [txToSave, ...arr];
+      });
+      setLedgerRefreshToken((v) => v + 1);
     },
-    [isCloud, upsertCloud, upsertLocal]
+    [isCloud, householdId]
   );
 
   const onDeleteReceipt = useCallback(
     async (id: string) => {
-      if (isCloud) await deleteCloud("receipts", id);
-      setReceipts((prev) => deleteLocal(prev, id));
+      const internalId = (id || "").trim();
+      // Descobre a transação vinculada (se existir)
+      const linkedTxId = (() => {
+        const found = (Array.isArray(receipts) ? receipts : []).find(
+          (r) => (r as any)?.internal_id === internalId
+        );
+        return (found as any)?.transacao_id || `TX_${internalId}`;
+      })();
+
+      if (isCloud) {
+        const receiptsCol = collection(
+          db,
+          `households/${householdId}/receipts`
+        );
+        const txCol = collection(db, `households/${householdId}/transacoes`);
+
+        const receiptRef = doc(receiptsCol, internalId);
+        const txRef = doc(txCol, linkedTxId);
+
+        const batch = writeBatch(db);
+        batch.delete(receiptRef);
+        batch.delete(txRef);
+        await batch.commit();
+      }
+
+      // Estado local
+      setReceipts((prev) =>
+        (Array.isArray(prev) ? prev : []).filter(
+          (r) => (r as any)?.internal_id !== internalId
+        )
+      );
+      setTransacoes((prev) =>
+        (Array.isArray(prev) ? prev : []).filter((t) => t.id !== linkedTxId)
+      );
+      setLedgerRefreshToken((v) => v + 1);
     },
-    [isCloud, deleteCloud, deleteLocal]
+    [isCloud, householdId, receipts]
   );
 
   const onSaveInvestment = useCallback(
@@ -570,6 +779,7 @@ export default function App() {
             onDelete={onDeleteTransacao}
             isCloud={isCloud}
             householdId={householdId}
+            refreshToken={ledgerRefreshToken}
           />
         );
       case "calendar":
@@ -579,6 +789,7 @@ export default function App() {
       case "receipts":
         return (
           <Receipts
+            viewMode={viewMode}
             receipts={receipts}
             categorias={categorias}
             fornecedores={fornecedores}
@@ -604,6 +815,8 @@ export default function App() {
             categorias={categorias}
             formasPagamento={formasPagamento}
             fornecedores={fornecedores}
+            currentTransacoes={transacoes}
+            currentReceipts={receipts}
             onImportComplete={onImportComplete}
           />
         );

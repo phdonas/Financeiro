@@ -13,6 +13,8 @@ interface LedgerProps {
   // Sprint 2.8: paginação real via Firestore quando em modo cloud
   isCloud?: boolean;
   householdId?: string;
+  // Sprint 3.2 fix: força refresh quando mudanças vierem de Recibos
+  refreshToken?: number;
 }
 
 const Ledger: React.FC<LedgerProps> = ({
@@ -24,6 +26,7 @@ const Ledger: React.FC<LedgerProps> = ({
   onDelete,
   isCloud = false,
   householdId,
+  refreshToken = 0,
 }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
@@ -178,7 +181,7 @@ useEffect(() => {
   setCloudHasMore(true);
   setCloudTxs([]);
   fetchCloudPage({ reset: true, cursor: null });
-}, [isCloud, effectiveHouseholdId, viewMode, monthFilter, yearFilter, pageSize, periodRange]);
+}, [isCloud, effectiveHouseholdId, viewMode, monthFilter, yearFilter, pageSize, periodRange, refreshToken]);
 
 
   const parseYearMonth = (dateStr?: string) => {
