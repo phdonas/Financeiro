@@ -36,6 +36,7 @@ const Ledger: React.FC<LedgerProps> = ({
   // 0 significa "Todos"
   const [monthFilter, setMonthFilter] = useState<number>(() => new Date().getMonth() + 1);
   const [yearFilter, setYearFilter] = useState<number>(() => new Date().getFullYear());
+  const [dateRegime, setDateRegime] = useState<'COMPETENCIA' | 'CAIXA'>('COMPETENCIA');
   // Sprint 2.6: persistência de filtros + paginação incremental (evita travar com listas grandes)
   const PAGE_SIZE = 20;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
@@ -217,11 +218,13 @@ useEffect(() => {
     years.add(nowYear);
     if (yearFilter) years.add(yearFilter);
     for (const t of list) {
-      const ym = parseYearMonth(t.data_competencia) ?? parseYearMonth(t.data_prevista_pagamento);
+      const primaryDate = dateRegime === 'CAIXA' ? t.data_prevista_pagamento : t.data_competencia;
+      const fallbackDate = dateRegime === 'CAIXA' ? t.data_competencia : t.data_prevista_pagamento;
+      const ym = parseYearMonth(primaryDate) ?? parseYearMonth(fallbackDate);
       if (ym?.year) years.add(ym.year);
     }
     return Array.from(years).sort((a, b) => b - a);
-  }, [isCloud, cloudTxs, transacoes, yearFilter]);
+  }, [isCloud, cloudTxs, transacoes, yearFilter, dateRegime]);
 
 
   const MONTHS_PT = useMemo(
@@ -503,7 +506,9 @@ useEffect(() => {
       const matchCat = !catFilter || t.categoria_id === catFilter;
 
       // Preferência: data de competência; fallback: prevista de pagamento
-      const ym = parseYearMonth(t.data_competencia) ?? parseYearMonth(t.data_prevista_pagamento);
+      const primaryDate = dateRegime === 'CAIXA' ? t.data_prevista_pagamento : t.data_competencia;
+      const fallbackDate = dateRegime === 'CAIXA' ? t.data_competencia : t.data_prevista_pagamento;
+      const ym = parseYearMonth(primaryDate) ?? parseYearMonth(fallbackDate);
       const matchYear = !yearFilter || (ym?.year === yearFilter);
       const matchMonth = !monthFilter || (ym?.month === monthFilter);
 
@@ -511,7 +516,9 @@ useEffect(() => {
     });
 
     const safeDateKey = (t: Transacao) => {
-      return (t?.data_competencia || t?.data_prevista_pagamento || '').toString();
+      const primary = dateRegime === 'CAIXA' ? t?.data_prevista_pagamento : t?.data_competencia;
+      const fallback = dateRegime === 'CAIXA' ? t?.data_competencia : t?.data_prevista_pagamento;
+      return ((primary || fallback || '') as any).toString();
     };
 
     // Ordenação desc por string ISO. Datas vazias/invalidas vão para o fim.
@@ -527,7 +534,7 @@ useEffect(() => {
         return 0;
       }
     });
-  }, [isCloud, cloudTxs, transacoes, viewMode, catFilter, monthFilter, yearFilter]);
+  }, [isCloud, cloudTxs, transacoes, viewMode, catFilter, monthFilter, yearFilter, dateRegime]);
 
 
   // Sprint 2.6: maps para evitar .find() por linha (performance)
@@ -656,6 +663,15 @@ const handleLoadMore = () => {
              {availableYears.map((y) => (
                <option key={y} value={y}>{y}</option>
              ))}
+           </select>
+
+           <select
+             className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase tracking-[0.08em] text-bb-blue/80 appearance-none transition-all duration-200 ease border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+             value={dateRegime}
+             onChange={(e) => setDateRegime(e.target.value as any)}
+           >
+             <option value="COMPETENCIA">Competência</option>
+             <option value="CAIXA">Caixa (Pagamento)</option>
            </select>
         </div>
         <button onClick={() => {
