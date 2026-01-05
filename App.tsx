@@ -1075,7 +1075,7 @@ export default function App() {
           />
         );
       case "calendar":
-        return <Calendar transacoes={transacoes} />;
+        return <Calendar transacoes={transacoes} inssRecords={inssRecords} householdId={householdId} />;
       case "inss":
         return (
           <InssBrasil
