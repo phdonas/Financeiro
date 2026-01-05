@@ -593,49 +593,106 @@ export default function App() {
         setTransacoes((prev) => upsertLocal(prev, t));
       }
 
-      // Sprint 3.2+: Se este lançamento estiver vinculado a um Recibo, sincroniza de volta (bidirecional)
-      const receiptId =
-        ((savedTx as any)?.receipt_id || "").trim() ||
-        inferReceiptInternalIdFromTxId(savedTx.id);
+      // 1) Sprint 3.2+: Se este lançamento estiver vinculado a um Recibo, sincroniza de volta (bidirecional)
+      try {
+        const receiptId =
+          ((savedTx as any)?.receipt_id || "").trim() ||
+          inferReceiptInternalIdFromTxId(savedTx.id);
 
-      if (!receiptId) return;
+        if (receiptId) {
+          const isPaid = (savedTx.status || "") === "PAGO";
+          const payDate = (
+            savedTx.data_prevista_pagamento ||
+            savedTx.data_competencia ||
+            ""
+          ).trim();
 
-      const isPaid = (savedTx.status || "") === "PAGO";
-      const payDate = (savedTx.data_prevista_pagamento || savedTx.data_competencia || "").trim();
+          // Atualiza estado local de Recibos (sem mexer em valores/cálculos já existentes)
+          setReceipts((prev) => {
+            const arr = Array.isArray(prev) ? prev : [];
+            const idx = arr.findIndex(
+              (r) => (r as any)?.internal_id === receiptId
+            );
+            if (idx < 0) return arr;
+            const copy = arr.slice();
+            copy[idx] = {
+              ...(copy[idx] as any),
+              transacao_id: savedTx.id,
+              is_paid: isPaid,
+              pay_date: payDate || (copy[idx] as any)?.pay_date,
+            };
+            return copy;
+          });
 
-      // Atualiza estado local de Recibos (sem mexer em valores/cálculos já existentes)
-      setReceipts((prev) => {
-        const arr = Array.isArray(prev) ? prev : [];
-        const idx = arr.findIndex((r) => (r as any)?.internal_id === receiptId);
-        if (idx < 0) return arr;
-        const copy = arr.slice();
-        copy[idx] = {
-          ...(copy[idx] as any),
-          transacao_id: savedTx.id,
-          is_paid: isPaid,
-          pay_date: payDate || (copy[idx] as any)?.pay_date,
-        };
-        return copy;
-      });
+          if (isCloud) {
+            const receiptsCol = collection(
+              db,
+              `households/${householdId}/receipts`
+            );
+            const receiptRef = doc(receiptsCol, receiptId);
+            const batch = writeBatch(db);
+            batch.set(
+              receiptRef,
+              {
+                transacao_id: savedTx.id,
+                is_paid: isPaid,
+                ...(payDate ? { pay_date: payDate } : {}),
+                updatedAt: Timestamp.now(),
+              } as any,
+              { merge: true }
+            );
+            await batch.commit();
+          }
+        }
+      } catch (e) {
+        console.warn("Falha ao sincronizar Recibo a partir do Ledger:", e);
+      }
 
-      if (isCloud) {
-        const receiptsCol = collection(db, `households/${householdId}/receipts`);
-        const receiptRef = doc(receiptsCol, receiptId);
-        const batch = writeBatch(db);
-        batch.set(
-          receiptRef,
-          {
-            transacao_id: savedTx.id,
-            is_paid: isPaid,
-            ...(payDate ? { pay_date: payDate } : {}),
-            updatedAt: Timestamp.now(),
-          } as any,
-          { merge: true }
-        );
-        await batch.commit();
+      // 2) Sprint 4.5: Se este lançamento estiver vinculado a um registro INSS, sincroniza status de volta (Ledger → INSS)
+      try {
+        const directInssId = String((savedTx as any)?.inss_record_id || "").trim();
+        const rec =
+          (Array.isArray(inssRecords) ? inssRecords : []).find(
+            (r) => r.id === directInssId
+          ) ||
+          (Array.isArray(inssRecords) ? inssRecords : []).find(
+            (r: any) => String(r?.transacao_id || "").trim() === savedTx.id
+          );
+
+        if (rec) {
+          const desiredStatus = savedTx.status;
+          const needsUpdate =
+            (rec.status || "") !== (desiredStatus || "") ||
+            String((rec as any)?.transacao_id || "").trim() !== savedTx.id;
+
+          if (needsUpdate) {
+            const patched: any = {
+              ...rec,
+              status: desiredStatus,
+              transacao_id: savedTx.id,
+            };
+
+            // Estado local
+            setInssRecords((prev) => {
+              const arr = Array.isArray(prev) ? prev : [];
+              const idx = arr.findIndex((x) => x.id === rec.id);
+              if (idx < 0) return arr;
+              const copy = arr.slice();
+              copy[idx] = patched;
+              return copy;
+            });
+
+            // Cloud (best-effort, sem quebrar o CRUD do Ledger)
+            if (isCloud) {
+              await upsertCloud<InssRecord>("inssRecords", patched);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Falha ao sincronizar INSS a partir do Ledger:", e);
       }
     },
-    [isCloud, upsertCloud, upsertLocal, householdId]
+    [isCloud, upsertCloud, upsertLocal, householdId, inssRecords]
   );
 
   const onDeleteTransacao = useCallback(
