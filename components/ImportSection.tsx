@@ -33,6 +33,7 @@ interface ParsedRow {
   data: Partial<Transacao> | Partial<Receipt>;
   isValid: boolean;
   errors: string[];
+  warnings?: string[];
   displayInfo: {
     data: string;
     identificador: string;
@@ -41,6 +42,18 @@ interface ParsedRow {
     detalhe?: string;
   };
 }
+
+type ImportValueRemap = {
+  suppliers: Record<string, string>;
+  categories: Record<string, string>;
+  accounts: Record<string, string>;
+};
+
+type UnresolvedIssues = {
+  suppliers: string[];
+  categories: string[];
+  accounts: { cat: string; item: string }[];
+};
 
 type MappingField =
   | "date"
@@ -68,6 +81,10 @@ function normalizeStr(v: any): string {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function makeAccountKey(cat: string, item: string): string {
+  return `${normalizeStr(cat)}::${normalizeStr(item)}`;
 }
 
 function isTruthyPaid(v: any): boolean {
@@ -382,6 +399,14 @@ const ImportSection: React.FC<ImportSectionProps> = ({
   const [mappingDraft, setMappingDraft] = useState<Record<string, string>>({});
   const [mappingUsedState, setMappingUsedState] = useState<ImportMappingUsed | null>(null);
 
+  const [valueRemap, setValueRemap] = useState<ImportValueRemap>({
+    suppliers: {},
+    categories: {},
+    accounts: {},
+  });
+  const [unresolved, setUnresolved] = useState<UnresolvedIssues | null>(null);
+  const [needsRebuild, setNeedsRebuild] = useState<boolean>(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const requiredFields = useMemo(() => (importType ? requiredFieldsFor(importType) : []), [importType]);
@@ -396,6 +421,9 @@ const ImportSection: React.FC<ImportSectionProps> = ({
     setColIndexById({});
     setMappingDraft({});
     setMappingUsedState(null);
+    setValueRemap({ suppliers: {}, categories: {}, accounts: {} });
+    setUnresolved(null);
+    setNeedsRebuild(false);
     setStructureMode("LETTERS");
     setDataStartIndex(3);
   }
@@ -408,8 +436,12 @@ const ImportSection: React.FC<ImportSectionProps> = ({
     return row[idx];
   }
 
-  function parseWithMapping(rows: any[][], mapping: ImportMappingUsed) {
+  function parseWithMapping(rows: any[][], mapping: ImportMappingUsed, remap: ImportValueRemap = valueRemap) {
     const mappingCols = mapping.columns as Record<string, string>;
+
+    const issueSuppliers = new Set<string>();
+    const issueCategories = new Set<string>();
+    const issueAccounts = new Map<string, { cat: string; item: string }>();
 
     const dataRows = rows.slice(dataStartIndex);
     const results: ParsedRow[] = dataRows
@@ -440,9 +472,30 @@ const ImportSection: React.FC<ImportSectionProps> = ({
           if (!itemName) errors.push("Conta/Item vazio");
           if (!(baseVal > 0)) errors.push("Valor base inválido");
 
-          const foundSup = fornecedores.find((s) => s.nome.toUpperCase() === supName.toUpperCase());
-          const foundCat = categorias.find((c) => c.nome.toUpperCase() === catName.toUpperCase());
-          const foundItem = foundCat?.contas.find((i) => i.nome.toUpperCase() === itemName.toUpperCase());
+          const foundSupByName = fornecedores.find((s) => s.nome.toUpperCase() === supName.toUpperCase());
+          const foundSup =
+            foundSupByName ||
+            (remap.suppliers[normalizeStr(supName)]
+              ? fornecedores.find((s) => s.id === remap.suppliers[normalizeStr(supName)])
+              : undefined);
+          if (!foundSup && supName) issueSuppliers.add(supName);
+
+          const foundCatByName = categorias.find((c) => c.nome.toUpperCase() === catName.toUpperCase());
+          const foundCat =
+            foundCatByName ||
+            (remap.categories[normalizeStr(catName)]
+              ? categorias.find((c) => c.id === remap.categories[normalizeStr(catName)])
+              : undefined);
+          if (!foundCat && catName) issueCategories.add(catName);
+
+          const accountKey = makeAccountKey(catName, itemName);
+          const foundItemByName = foundCat?.contas.find((i) => i.nome.toUpperCase() === itemName.toUpperCase());
+          const foundItem =
+            foundItemByName ||
+            (foundCat && remap.accounts[accountKey]
+              ? foundCat.contas.find((i) => i.id === remap.accounts[accountKey])
+              : undefined);
+          if (foundCat && !foundItem && itemName) issueAccounts.set(accountKey, { cat: catName, item: itemName });
 
           if (!foundSup) errors.push(`Fornecedor '${supName}' não mapeado`);
           if (!foundCat) errors.push(`Cat '${catName}' não mapeada`);
@@ -483,7 +536,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
             displayInfo: {
               data: isoDate,
               identificador: `REC #${rId}`,
-              categoria: catName,
+              categoria: foundCat?.nome || catName,
               valor: receipt.received_amount || 0,
               detalhe: supName,
             },
@@ -504,9 +557,25 @@ const ImportSection: React.FC<ImportSectionProps> = ({
         if (!itemName) errors.push("Conta/Item vazio");
         if (!(val !== 0)) errors.push("Valor inválido");
 
+        const warnings: string[] = [];
         const foundFP = formasPagamento.find((f) => f.nome.toUpperCase() === banco.toUpperCase());
-        const foundCat = categorias.find((c) => c.nome.toUpperCase() === catName.toUpperCase());
-        const foundItem = foundCat?.contas.find((i) => i.nome.toUpperCase() === itemName.toUpperCase());
+
+        const foundCatByName = categorias.find((c) => c.nome.toUpperCase() === catName.toUpperCase());
+        const foundCat =
+          foundCatByName ||
+          (remap.categories[normalizeStr(catName)]
+            ? categorias.find((c) => c.id === remap.categories[normalizeStr(catName)])
+            : undefined);
+        if (!foundCat && catName) issueCategories.add(catName);
+
+        const accountKey = makeAccountKey(catName, itemName);
+        const foundItemByName = foundCat?.contas.find((i) => i.nome.toUpperCase() === itemName.toUpperCase());
+        const foundItem =
+          foundItemByName ||
+          (foundCat && remap.accounts[accountKey]
+            ? foundCat.contas.find((i) => i.id === remap.accounts[accountKey])
+            : undefined);
+        if (foundCat && !foundItem && itemName) issueAccounts.set(accountKey, { cat: catName, item: itemName });
 
         if (!foundCat) errors.push(`Cat '${catName}' não mapeada`);
         if (foundCat && !foundItem) errors.push(`Conta '${itemName}' não mapeada`);
@@ -536,16 +605,24 @@ const ImportSection: React.FC<ImportSectionProps> = ({
           data: tx,
           isValid: errors.length === 0,
           errors,
+          warnings: warnings.length ? warnings : undefined,
           displayInfo: {
             data: isoDate,
             identificador: tx.description || "",
-            categoria: catName,
+            categoria: foundCat?.nome || catName,
             valor: val,
             detalhe: banco,
           },
         };
       })
       .filter(Boolean) as ParsedRow[];
+
+    setUnresolved({
+      suppliers: Array.from(issueSuppliers).sort(),
+      categories: Array.from(issueCategories).sort(),
+      accounts: Array.from(issueAccounts.values()).sort((a, b) => (a.cat + a.item).localeCompare(b.cat + b.item)),
+    });
+    setNeedsRebuild(false);
 
     setImportResults(results);
     setCurrentStep("REVIEW");
@@ -560,6 +637,9 @@ const ImportSection: React.FC<ImportSectionProps> = ({
     setColIndexById({});
     setMappingDraft({});
     setMappingUsedState(null);
+    setValueRemap({ suppliers: {}, categories: {}, accounts: {} });
+    setUnresolved(null);
+    setNeedsRebuild(false);
   }
 
   function handleChooseFile() {
@@ -592,7 +672,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
         if (auto) {
           setMappingUsedState(auto);
           onMappingUsed?.(auto);
-          parseWithMapping(rows, auto);
+          parseWithMapping(rows, auto, valueRemap);
           return;
         }
 
@@ -651,10 +731,29 @@ const ImportSection: React.FC<ImportSectionProps> = ({
     setMappingUsedState(mapping);
     onMappingUsed?.(mapping);
 
-    parseWithMapping(rawRows, mapping);
+    parseWithMapping(rawRows, mapping, valueRemap);
+  }
+
+
+  function rebuildPreview() {
+    if (!rawRows || !mappingUsedState) return;
+    parseWithMapping(rawRows, mappingUsedState, valueRemap);
   }
 
   function confirmSync() {
+    if (needsRebuild) {
+      return alert("Você alterou o remapeamento. Clique em 'Atualizar preview' antes de sincronizar.");
+    }
+
+    const criticalPending =
+      (unresolved?.categories?.length || 0) > 0 ||
+      (unresolved?.accounts?.length || 0) > 0 ||
+      (importType === "RECIBOS" && (unresolved?.suppliers?.length || 0) > 0);
+
+    if (criticalPending) {
+      return alert("Existem pendências de remapeamento. Resolva-as e atualize o preview antes de sincronizar.");
+    }
+
     const validOnes = importResults.filter((r) => r.isValid);
     if (validOnes.length === 0) return alert("Dados inválidos.");
 
@@ -688,6 +787,29 @@ const ImportSection: React.FC<ImportSectionProps> = ({
     alert(`Sincronizado: ${validOnes.length} registros.`);
     resetAll();
   }
+
+
+  const previewSummary = useMemo(() => {
+    const total = importResults.length;
+    const valid = importResults.filter((r) => r.isValid).length;
+    const withWarnings = importResults.filter((r) => r.isValid && (r.warnings?.length || 0) > 0).length;
+    const invalid = total - valid;
+
+    const totalValue = importResults
+      .filter((r) => r.isValid)
+      .reduce((acc, r) => {
+        const d: any = r.data;
+        const v = typeof d?.valor === "number" ? d.valor : typeof d?.received_amount === "number" ? d.received_amount : 0;
+        return acc + (Number.isFinite(v) ? v : 0);
+      }, 0);
+
+    return { total, valid, invalid, withWarnings, totalValue };
+  }, [importResults]);
+
+  const criticalPending =
+    (unresolved?.categories?.length || 0) > 0 ||
+    (unresolved?.accounts?.length || 0) > 0 ||
+    (importType === "RECIBOS" && (unresolved?.suppliers?.length || 0) > 0);
 
   const title = useMemo(() => {
     if (importType === "RECIBOS") return "Recibos";
@@ -913,6 +1035,16 @@ const ImportSection: React.FC<ImportSectionProps> = ({
                 <div className="text-[11px] text-gray-500 font-bold mt-1">
                   Registros válidos serão gravados localmente. (Logs e dedupe serão implementados no Sprint 5.5)
                 </div>
+
+                <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-black uppercase italic">
+                  <span className="px-3 py-1 rounded-full bg-gray-100 text-gray-700">Total: {previewSummary.total}</span>
+                  <span className="px-3 py-1 rounded-full bg-emerald-50 text-emerald-700">Válidos: {previewSummary.valid}</span>
+                  <span className="px-3 py-1 rounded-full bg-amber-50 text-amber-700">Alertas: {previewSummary.withWarnings}</span>
+                  <span className="px-3 py-1 rounded-full bg-red-50 text-red-700">Erros: {previewSummary.invalid}</span>
+                  <span className="px-3 py-1 rounded-full bg-bb-blue/10 text-bb-blue">
+                    Total válido: {previewSummary.totalValue.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                </div>
               </div>
 
               <div className="flex flex-col items-end gap-2">
@@ -925,13 +1057,196 @@ const ImportSection: React.FC<ImportSectionProps> = ({
                 <button
                   type="button"
                   onClick={confirmSync}
-                  className="bg-bb-blue text-white font-black uppercase italic px-5 py-3 rounded-2xl shadow hover:scale-105 active:scale-95 transition-all"
+ disabled={criticalPending || needsRebuild}
+                  className="bg-bb-blue text-white font-black uppercase italic px-5 py-3 rounded-2xl shadow hover:scale-105 active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 disabled:active:scale-100"
                 >
                   Sincronizar Local
                 </button>
               </div>
             </div>
           </div>
+
+
+          {(unresolved &&
+            ((unresolved.categories?.length || 0) > 0 ||
+              (unresolved.accounts?.length || 0) > 0 ||
+              (unresolved.suppliers?.length || 0) > 0)) && (
+            <div className="rounded-2xl border border-gray-200 p-6 bg-white">
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <div className="text-[12px] text-gray-500 font-bold uppercase italic tracking-widest">
+                    Remapeamento rápido
+                  </div>
+                  <div className="text-[11px] text-gray-500 font-bold mt-1">
+                    Mapeie valores do arquivo que não existem no cadastro (categorias/contas/fornecedores) e atualize o preview.
+                    {importType === "RECIBOS" ? " (Em Recibos, fornecedor é obrigatório.)" : " (Em Lançamentos, fornecedor não é obrigatório.)"}
+                  </div>
+                  {needsRebuild && (
+                    <div className="mt-2 text-[11px] font-black text-amber-700 uppercase italic">
+                      Você alterou o remapeamento — clique em “Atualizar preview”.
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setValueRemap({ suppliers: {}, categories: {}, accounts: {} });
+                      setNeedsRebuild(true);
+                    }}
+                    className="px-4 py-2 rounded-2xl border border-gray-200 bg-white text-[11px] font-black uppercase italic hover:scale-105 active:scale-95 transition-all"
+                  >
+                    Limpar
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={rebuildPreview}
+                    className="px-4 py-2 rounded-2xl bg-bb-blue text-white text-[11px] font-black uppercase italic shadow hover:scale-105 active:scale-95 transition-all"
+                  >
+                    Atualizar preview
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-6 space-y-6">
+                {(unresolved.categories?.length || 0) > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-black uppercase italic text-bb-blue">Categorias não mapeadas</div>
+                    <div className="space-y-2">
+                      {unresolved.categories.map((rawCat) => {
+                        const k = normalizeStr(rawCat);
+                        return (
+                          <div key={k} className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center">
+                            <div className="text-[11px] font-bold text-gray-700 md:col-span-1 break-words">
+                              {rawCat}
+                            </div>
+                            <div className="md:col-span-2">
+                              <select
+                                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white"
+                                value={valueRemap.categories[k] || ""}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setValueRemap((prev) => ({
+                                    ...prev,
+                                    categories: { ...prev.categories, [k]: v },
+                                  }));
+                                  setNeedsRebuild(true);
+                                }}
+                              >
+                                <option value="">(Selecione a categoria destino)</option>
+                                {categorias.map((c) => (
+                                  <option key={c.id} value={c.id}>
+                                    {c.nome}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {(unresolved.accounts?.length || 0) > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-black uppercase italic text-bb-blue">Contas/itens não mapeados</div>
+                    <div className="space-y-2">
+                      {unresolved.accounts.map(({ cat, item }) => {
+                        const catKey = normalizeStr(cat);
+                        const key = makeAccountKey(cat, item);
+                        const targetCat =
+                          categorias.find((c) => c.nome.toUpperCase() === String(cat || "").toUpperCase()) ||
+                          (valueRemap.categories[catKey]
+                            ? categorias.find((c) => c.id === valueRemap.categories[catKey])
+                            : undefined);
+
+                        const contas = targetCat?.contas || [];
+                        const disabled = !targetCat;
+
+                        return (
+                          <div key={key} className="grid grid-cols-1 md:grid-cols-4 gap-2 items-center">
+                            <div className="text-[11px] font-bold text-gray-700 md:col-span-2 break-words">
+                              <span className="font-black">{cat}</span> → {item}
+                              {!targetCat && (
+                                <span className="ml-2 text-[10px] font-black uppercase italic text-amber-700">
+                                  (Mapeie a categoria primeiro)
+                                </span>
+                              )}
+                            </div>
+                            <div className="md:col-span-2">
+                              <select
+                                disabled={disabled}
+                                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white disabled:opacity-50"
+                                value={valueRemap.accounts[key] || ""}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setValueRemap((prev) => ({
+                                    ...prev,
+                                    accounts: { ...prev.accounts, [key]: v },
+                                  }));
+                                  setNeedsRebuild(true);
+                                }}
+                              >
+                                <option value="">{disabled ? "(Mapeie a categoria para escolher a conta)" : "(Selecione a conta destino)"}</option>
+                                {contas.map((it) => (
+                                  <option key={it.id} value={it.id}>
+                                    {it.nome}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {(unresolved.suppliers?.length || 0) > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-black uppercase italic text-bb-blue">Fornecedores não mapeados</div>
+                    <div className="space-y-2">
+                      {unresolved.suppliers.map((rawSup) => {
+                        const k = normalizeStr(rawSup);
+                        return (
+                          <div key={k} className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center">
+                            <div className="text-[11px] font-bold text-gray-700 md:col-span-1 break-words">
+                              {rawSup}
+                            </div>
+                            <div className="md:col-span-2">
+                              <select
+                                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white"
+                                value={valueRemap.suppliers[k] || ""}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setValueRemap((prev) => ({
+                                    ...prev,
+                                    suppliers: { ...prev.suppliers, [k]: v },
+                                  }));
+                                  setNeedsRebuild(true);
+                                }}
+                              >
+                                <option value="">(Selecione o fornecedor destino)</option>
+                                {fornecedores.map((f) => (
+                                  <option key={f.id} value={f.id}>
+                                    {f.nome} ({f.pais})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
 
           <div className="overflow-x-auto max-h-[520px] border border-gray-100 rounded-2xl">
             <table className="w-full text-left text-[11px]">
