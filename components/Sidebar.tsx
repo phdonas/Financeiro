@@ -42,7 +42,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     { id: "receipts", label: "Meus Recibos", icon: "🧾" },
     { id: "investments", label: "Investimentos", icon: "📈" },
     { id: "taxes", label: "Cálculo de IVA", icon: "⚖️" },
-    { id: "import", label: "Importar Dados", icon: "📥" },
+    { id: "import", label: "Importar/Exportar", icon: "📥" },
     { id: "settings", label: "Configurações", icon: "⚙️" },
   ];
 

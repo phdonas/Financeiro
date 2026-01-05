@@ -16,7 +16,7 @@ import Calendar from "./components/Calendar";
 import Receipts from "./components/Receipts";
 import Investments from "./components/Investments";
 import TaxReports from "./components/TaxReports";
-import ImportSection from "./components/ImportSection";
+import ImportExport from "./components/ImportExport";
 import Settings from "./components/Settings";
 import InssBrasil from "./components/InssBrasil";
 
@@ -1032,7 +1032,7 @@ export default function App() {
       receipts: "Meus Recibos",
       investments: "Investimentos",
       taxes: "Cálculo de IVA",
-      import: "Importar Dados",
+      import: "Importar/Exportar",
       settings: "Configurações",
     };
     return map[activeTab] ?? "FinanceFamily";
@@ -1113,13 +1113,14 @@ export default function App() {
         return <TaxReports receipts={receipts} viewMode={viewMode} />;
       case "import":
         return (
-          <ImportSection
+          <ImportExport
             categorias={categorias}
             formasPagamento={formasPagamento}
             fornecedores={fornecedores}
-            currentTransacoes={transacoes}
-            currentReceipts={receipts}
-            onImportComplete={onImportComplete}
+            transacoes={transacoes}
+            receipts={receipts}
+            onSaveTx={onSaveTransacao}
+            onSaveReceipt={onSaveReceipt}
           />
         );
       case "settings":
