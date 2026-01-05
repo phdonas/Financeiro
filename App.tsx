@@ -1119,6 +1119,8 @@ export default function App() {
             fornecedores={fornecedores}
             transacoes={transacoes}
             receipts={receipts}
+            inssRecords={inssRecords}
+            inssConfigs={inssConfigs}
             onSaveTx={onSaveTransacao}
             onSaveReceipt={onSaveReceipt}
           />
