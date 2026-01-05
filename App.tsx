@@ -441,6 +441,58 @@ export default function App() {
     [isCloud, deleteCloud, deleteLocal]
   );
 
+  const onSaveInssConfig = useCallback(
+    async (cfg: InssYearlyConfig) => {
+      const ano = Number((cfg as any)?.ano);
+      const salarioBase = Number((cfg as any)?.salario_base);
+      const perc = Number((cfg as any)?.percentual_inss);
+
+      // garante id estável (preferir id existente; fallback para config do mesmo ano; senão usar o ano como id)
+      const existingSameYear: any =
+        (inssConfigs as any[])?.find((c: any) => Number(c?.ano) === ano) ?? null;
+
+      const id =
+        (cfg as any)?.id ||
+        (existingSameYear as any)?.id ||
+        (Number.isFinite(ano) ? String(ano) : undefined);
+
+      const normalized: any = {
+        ...(cfg as any),
+        ano,
+        salario_base: salarioBase,
+        percentual_inss: perc,
+        ...(id ? { id } : {}),
+      };
+
+      if (isCloud) {
+        const saved = await upsertCloud<any>("inssConfigs", normalized);
+        setInssConfigs((prev) => {
+          const next = upsertLocal(prev as any, saved as any) as any[];
+          return next
+            .filter(Boolean)
+            .sort((a: any, b: any) => Number(b?.ano ?? 0) - Number(a?.ano ?? 0));
+        });
+      } else {
+        setInssConfigs((prev) => {
+          const next = upsertLocal(prev as any, normalized as any) as any[];
+          return next
+            .filter(Boolean)
+            .sort((a: any, b: any) => Number(b?.ano ?? 0) - Number(a?.ano ?? 0));
+        });
+      }
+    },
+    [isCloud, upsertCloud, upsertLocal, inssConfigs]
+  );
+
+  const onDeleteInssConfig = useCallback(
+    async (id: string) => {
+      if (isCloud) await deleteCloud("inssConfigs", id);
+      setInssConfigs((prev) => deleteLocal(prev as any, id) as any);
+    },
+    [isCloud, deleteCloud, deleteLocal]
+  );
+
+
 
   // -------------------- HANDLERS --------------------
   const onSaveTransacao = useCallback(
@@ -942,6 +994,9 @@ export default function App() {
             onDeleteFornecedor={onDeleteFornecedor}
             onSaveOrcamento={onSaveOrcamento}
             onDeleteOrcamento={onDeleteOrcamento}
+            inssConfigs={inssConfigs}
+            onSaveInssConfig={onSaveInssConfig}
+            onDeleteInssConfig={onDeleteInssConfig}
           />
         );
       default:

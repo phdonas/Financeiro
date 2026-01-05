@@ -127,6 +127,7 @@ export interface InssRecord {
 }
 
 export interface InssYearlyConfig {
+  id?: string;
   ano: number;
   salario_base: number;
   percentual_inss: number;

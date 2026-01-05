@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { TipoTransacao } from "../types";
+import { TipoTransacao, InssYearlyConfig } from "../types";
 
 type CountryCode = "PT" | "BR";
 
@@ -60,6 +60,11 @@ interface SettingsProps {
 
   onSaveOrcamento: (o: Orcamento) => void;
   onDeleteOrcamento: (id: string) => void;
+
+  // Sprint 4.2 — INSS
+  inssConfigs: (InssYearlyConfig & { id?: string })[];
+  onSaveInssConfig: (cfg: InssYearlyConfig & { id?: string }) => void | Promise<void>;
+  onDeleteInssConfig: (id: string) => void | Promise<void>;
 }
 
 function newId() {
@@ -105,6 +110,7 @@ const Settings: React.FC<SettingsProps> = ({
   formasPagamento,
   fornecedores,
   orcamentos,
+  inssConfigs,
   onSaveCategoria,
   onDeleteCategoria,
   onSaveFormaPagamento,
@@ -113,8 +119,10 @@ const Settings: React.FC<SettingsProps> = ({
   onDeleteFornecedor,
   onSaveOrcamento,
   onDeleteOrcamento,
+  onSaveInssConfig,
+  onDeleteInssConfig,
 }) => {
-  const [tab, setTab] = useState<"CATEGORIAS" | "PAGAMENTO" | "FORNECEDORES" | "ORCAMENTO">("CATEGORIAS");
+  const [tab, setTab] = useState<"CATEGORIAS" | "PAGAMENTO" | "FORNECEDORES" | "ORCAMENTO" | "INSS">("CATEGORIAS");
 
   // --- Modals state ---
   const [catOpen, setCatOpen] = useState(false);
@@ -123,8 +131,10 @@ const Settings: React.FC<SettingsProps> = ({
   const [fpOpen, setFpOpen] = useState(false);
   const [supOpen, setSupOpen] = useState(false);
   const [orcOpen, setOrcOpen] = useState(false);
+  const [inssOpen, setInssOpen] = useState(false);
 
   const [catMode, setCatMode] = useState<"NEW" | "EDIT">("NEW");
+  const [inssMode, setInssMode] = useState<"NEW" | "EDIT">("NEW");
 
   const [catForm, setCatForm] = useState<Categoria>({
     id: "",
@@ -138,6 +148,16 @@ const Settings: React.FC<SettingsProps> = ({
   const [fpForm, setFpForm] = useState<FormaPagamento>({ id: "", nome: "", categoria: "BANCO", countryCode: "PT" });
   const [supForm, setSupForm] = useState<Fornecedor>({ id: "", nome: "", countryCode: "PT" });
   const [orcForm, setOrcForm] = useState<Orcamento>({ id: "", countryCode: "PT", categoriaId: "", valor: 0 });
+
+  const [inssForm, setInssForm] = useState<InssYearlyConfig & { id?: string }>(() => ({
+    id: undefined,
+    ano: new Date().getFullYear(),
+    salario_base: 0,
+    percentual_inss: 0,
+    paulo: { nit: "", total_parcelas: 0, data_aposentadoria: "" },
+    debora: { nit: "", total_parcelas: 0, data_aposentadoria: "" },
+  }));
+  const [inssError, setInssError] = useState<string>("");
 
   const categoriasById = useMemo(() => {
     const m = new Map<string, Categoria>();
@@ -167,6 +187,140 @@ const Settings: React.FC<SettingsProps> = ({
       contas: [],
     });
     setCatOpen(true);
+  }
+
+
+  // --- INSS (Sprint 4.2) ---
+  function openNewInssConfig() {
+    setInssMode("NEW");
+    setInssError("");
+    const currentYear = new Date().getFullYear();
+
+    // tenta reaproveitar último config (se existir) como base
+    const sorted = (inssConfigs as any[])
+      .slice()
+      .sort((a: any, b: any) => Number(b?.ano ?? 0) - Number(a?.ano ?? 0));
+    const last = sorted[0] as any;
+
+    setInssForm({
+      id: undefined,
+      ano: currentYear,
+      salario_base: Number(last?.salario_base ?? 0),
+      percentual_inss: Number(last?.percentual_inss ?? 0),
+      paulo: {
+        nit: String(last?.paulo?.nit ?? ""),
+        total_parcelas: Number(last?.paulo?.total_parcelas ?? 0),
+        data_aposentadoria: String(last?.paulo?.data_aposentadoria ?? ""),
+      },
+      debora: {
+        nit: String(last?.debora?.nit ?? ""),
+        total_parcelas: Number(last?.debora?.total_parcelas ?? 0),
+        data_aposentadoria: String(last?.debora?.data_aposentadoria ?? ""),
+      },
+    });
+
+    setInssOpen(true);
+  }
+
+  function openEditInssConfig(cfg: any) {
+    setInssMode("EDIT");
+    setInssError("");
+    setInssForm({
+      id: cfg?.id,
+      ano: Number(cfg?.ano ?? new Date().getFullYear()),
+      salario_base: Number(cfg?.salario_base ?? 0),
+      percentual_inss: Number(cfg?.percentual_inss ?? 0),
+      paulo: {
+        nit: String(cfg?.paulo?.nit ?? ""),
+        total_parcelas: Number(cfg?.paulo?.total_parcelas ?? 0),
+        data_aposentadoria: String(cfg?.paulo?.data_aposentadoria ?? ""),
+      },
+      debora: {
+        nit: String(cfg?.debora?.nit ?? ""),
+        total_parcelas: Number(cfg?.debora?.total_parcelas ?? 0),
+        data_aposentadoria: String(cfg?.debora?.data_aposentadoria ?? ""),
+      },
+    });
+    setInssOpen(true);
+  }
+
+  function isValidBRDate(d: string) {
+    const s = String(d || "").trim();
+    if (!s) return true; // opcional
+    const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(s);
+    if (!m) return false;
+    const dd = Number(m[1]);
+    const mm = Number(m[2]);
+    const yy = Number(m[3]);
+    if (!Number.isFinite(dd) || !Number.isFinite(mm) || !Number.isFinite(yy)) return false;
+    if (yy < 1900 || yy > 2100) return false;
+    if (mm < 1 || mm > 12) return false;
+    const maxDay = new Date(yy, mm, 0).getDate();
+    return dd >= 1 && dd <= maxDay;
+  }
+
+  async function saveInssConfig() {
+    setInssError("");
+
+    const ano = Number((inssForm as any)?.ano);
+    const salarioBase = Number((inssForm as any)?.salario_base);
+    const perc = Number((inssForm as any)?.percentual_inss);
+
+    if (!Number.isFinite(ano) || ano <= 0) {
+      setInssError("Ano é obrigatório.");
+      return;
+    }
+    if (!Number.isFinite(salarioBase) || Math.floor(salarioBase) !== salarioBase || salarioBase <= 0) {
+      setInssError("Salário base deve ser um número inteiro maior que zero.");
+      return;
+    }
+    if (!Number.isFinite(perc) || perc <= 0) {
+      setInssError("Percentual INSS deve ser maior que zero.");
+      return;
+    }
+
+    const pNit = String((inssForm as any)?.paulo?.nit ?? "").trim();
+    const dNit = String((inssForm as any)?.debora?.nit ?? "").trim();
+    if (!pNit || !dNit) {
+      setInssError("NIT é obrigatório para Paulo e Débora.");
+      return;
+    }
+
+    const pParcelas = Number((inssForm as any)?.paulo?.total_parcelas);
+    const dParcelas = Number((inssForm as any)?.debora?.total_parcelas);
+    if (!Number.isFinite(pParcelas) || pParcelas <= 0 || Math.floor(pParcelas) !== pParcelas) {
+      setInssError("Total de parcelas do Paulo deve ser inteiro maior que zero.");
+      return;
+    }
+    if (!Number.isFinite(dParcelas) || dParcelas <= 0 || Math.floor(dParcelas) !== dParcelas) {
+      setInssError("Total de parcelas da Débora deve ser inteiro maior que zero.");
+      return;
+    }
+
+    const pApos = String((inssForm as any)?.paulo?.data_aposentadoria ?? "").trim();
+    const dApos = String((inssForm as any)?.debora?.data_aposentadoria ?? "").trim();
+    if (!isValidBRDate(pApos) || !isValidBRDate(dApos)) {
+      setInssError("Datas de aposentadoria devem estar no formato dd/mm/aaaa (ou vazias).");
+      return;
+    }
+
+    const payload: any = {
+      ...(inssForm as any),
+      ano,
+      salario_base: salarioBase,
+      percentual_inss: perc,
+      paulo: { ...(inssForm as any).paulo, nit: pNit, total_parcelas: pParcelas, data_aposentadoria: pApos },
+      debora: { ...(inssForm as any).debora, nit: dNit, total_parcelas: dParcelas, data_aposentadoria: dApos },
+    };
+
+    await onSaveInssConfig(payload);
+    setInssOpen(false);
+  }
+
+  async function onDeleteInssConfigConfirm(id: string, ano?: number) {
+    const label = ano ? `Ano ${ano}` : "este item";
+    if (!window.confirm(`Excluir parâmetros INSS de ${label}?`)) return;
+    await onDeleteInssConfig(id);
   }
 
   function openEditCategoria(c: Categoria) {
@@ -290,6 +444,7 @@ const Settings: React.FC<SettingsProps> = ({
           {tabBtn("PAGAMENTO", "Pagamento")}
           {tabBtn("FORNECEDORES", "Fornecedores")}
           {tabBtn("ORCAMENTO", "Orçamento")}
+          {tabBtn("INSS", "INSS")}
         </div>
       </div>
 
@@ -587,7 +742,92 @@ const Settings: React.FC<SettingsProps> = ({
         </div>
       )}
 
-      {/* MODAL: Categoria */}
+      {/* INSS */}
+      {tab === "INSS" && (
+        <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="text-sm font-black uppercase text-bb-blue">Parâmetros INSS</h3>
+              <p className="text-[11px] text-gray-500 font-semibold">
+                Configurações por ano fiscal: salário base, percentual e dados do contribuinte (NIT, parcelas, aposentadoria).
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={openNewInssConfig}
+              className="px-4 py-2 rounded-xl bg-bb-blue text-white text-[10px] font-black uppercase shadow-lg"
+            >
+              + Adicionar ano
+            </button>
+          </div>
+
+          {inssConfigs.length === 0 ? (
+            <div className="text-[12px] text-gray-500 font-semibold bg-gray-50 border rounded-2xl p-4">
+              Nenhum parâmetro cadastrado ainda. Clique em <b>Adicionar ano</b>.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {inssConfigs
+                .slice()
+                .sort((a: any, b: any) => Number(b?.ano ?? 0) - Number(a?.ano ?? 0))
+                .map((cfg: any) => {
+                  const id = cfg?.id || String(cfg?.ano ?? "");
+                  const fmtNum = (n: any) =>
+                    Number.isFinite(Number(n)) ? Number(n).toLocaleString("pt-BR") : "-";
+                  const fmtPct = (n: any) =>
+                    Number.isFinite(Number(n)) ? `${Number(n).toLocaleString("pt-BR")} %` : "-";
+
+                  return (
+                    <div
+                      key={id}
+                      className="rounded-[1.5rem] border bg-gray-50 p-4 flex items-start justify-between gap-4 flex-wrap"
+                    >
+                      <div className="min-w-[260px]">
+                        <div className="text-[12px] font-black uppercase text-gray-700">
+                          Ano {cfg?.ano ?? "-"}
+                        </div>
+                        <div className="text-[11px] text-gray-600 font-semibold mt-1">
+                          Salário base: <b>{fmtNum(cfg?.salario_base)}</b> · Percentual INSS:{" "}
+                          <b>{fmtPct(cfg?.percentual_inss)}</b>
+                        </div>
+
+                        <div className="text-[11px] text-gray-600 font-semibold mt-2">
+                          <b>Paulo</b> · NIT: {cfg?.paulo?.nit || "-"} · Parcelas:{" "}
+                          {cfg?.paulo?.total_parcelas ?? "-"} · Aposentadoria:{" "}
+                          {cfg?.paulo?.data_aposentadoria || "-"}
+                        </div>
+                        <div className="text-[11px] text-gray-600 font-semibold">
+                          <b>Débora</b> · NIT: {cfg?.debora?.nit || "-"} · Parcelas:{" "}
+                          {cfg?.debora?.total_parcelas ?? "-"} · Aposentadoria:{" "}
+                          {cfg?.debora?.data_aposentadoria || "-"}
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openEditInssConfig(cfg)}
+                          className="px-3 py-2 rounded-xl border bg-white text-[10px] font-black uppercase shadow-sm"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDeleteInssConfigConfirm(id, cfg?.ano)}
+                          className="px-3 py-2 rounded-xl border bg-white text-[10px] font-black uppercase text-red-600 shadow-sm"
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </div>
+      )}
+      {/* MODAL:Categoria */}
       <Modal
         open={catOpen}
         title={catMode === "NEW" ? "Adicionar categoria" : "Editar categoria"}
@@ -656,7 +896,7 @@ const Settings: React.FC<SettingsProps> = ({
 
       
 
-      {/* MODAL: Item (conta) */}
+      {/* MODAL:Item (conta) */}
       <Modal
         open={itemOpen}
         title={itemForm.id ? "Adicionar/Editar item" : "Adicionar item"}
@@ -716,7 +956,7 @@ const Settings: React.FC<SettingsProps> = ({
         </div>
       </Modal>
 
-      {/* MODAL: Forma de Pagamento */}
+      {/* MODAL:Forma de Pagamento */}
       <Modal open={fpOpen} title="Adicionar forma de pagamento" onClose={() => setFpOpen(false)}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -762,7 +1002,7 @@ const Settings: React.FC<SettingsProps> = ({
         </div>
       </Modal>
 
-      {/* MODAL: Fornecedor */}
+      {/* MODAL:Fornecedor */}
       <Modal open={supOpen} title="Adicionar fornecedor" onClose={() => setSupOpen(false)}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -796,7 +1036,7 @@ const Settings: React.FC<SettingsProps> = ({
         </div>
       </Modal>
 
-      {/* MODAL: Orçamento */}
+      {/* MODAL:Orçamento */}
       <Modal open={orcOpen} title="Definir meta (orçamento)" onClose={() => setOrcOpen(false)}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -844,6 +1084,201 @@ const Settings: React.FC<SettingsProps> = ({
           </div>
         </div>
       </Modal>
+
+      {/* MODAL:INSS */}
+      <Modal
+        open={inssOpen}
+        title={inssMode === "NEW" ? "Adicionar parâmetros INSS" : "Editar parâmetros INSS"}
+        onClose={() => setInssOpen(false)}
+      >
+        <div className="space-y-4">
+          {inssError ? (
+            <div className="rounded-2xl border bg-red-50 text-red-700 p-3 text-[11px] font-black">
+              {inssError}
+            </div>
+          ) : null}
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Ano</label>
+              <input
+                type="number"
+                value={Number((inssForm as any).ano)}
+                onChange={(e) => setInssForm((s: any) => ({ ...s, ano: Number(e.target.value) }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="2026"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Salário base (inteiro)</label>
+              <input
+                type="number"
+                value={Number((inssForm as any).salario_base)}
+                onChange={(e) =>
+                  setInssForm((s: any) => ({
+                    ...s,
+                    salario_base: Number(e.target.value),
+                  }))
+                }
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="Ex.: 1412"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Percentual INSS</label>
+              <input
+                type="number"
+                value={Number((inssForm as any).percentual_inss)}
+                onChange={(e) =>
+                  setInssForm((s: any) => ({
+                    ...s,
+                    percentual_inss: Number(e.target.value),
+                  }))
+                }
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="Ex.: 20"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="rounded-2xl border bg-gray-50 p-4">
+              <div className="text-[11px] font-black uppercase text-gray-700 mb-3">Paulo</div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase text-gray-500">NIT</label>
+                  <input
+                    value={(inssForm as any).paulo?.nit || ""}
+                    onChange={(e) =>
+                      setInssForm((s: any) => ({
+                        ...s,
+                        paulo: { ...(s as any).paulo, nit: e.target.value },
+                      }))
+                    }
+                    className="w-full mt-1 p-3 rounded-xl border bg-white"
+                    placeholder="NIT do Paulo"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-gray-500">Total parcelas</label>
+                  <input
+                    type="number"
+                    value={Number((inssForm as any).paulo?.total_parcelas ?? 0)}
+                    onChange={(e) =>
+                      setInssForm((s: any) => ({
+                        ...s,
+                        paulo: {
+                          ...(s as any).paulo,
+                          total_parcelas: Number(e.target.value),
+                        },
+                      }))
+                    }
+                    className="w-full mt-1 p-3 rounded-xl border bg-white"
+                    placeholder="Ex.: 12"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="text-[10px] font-black uppercase text-gray-500">
+                    Data aposentadoria (dd/mm/aaaa)
+                  </label>
+                  <input
+                    value={(inssForm as any).paulo?.data_aposentadoria || ""}
+                    onChange={(e) =>
+                      setInssForm((s: any) => ({
+                        ...s,
+                        paulo: { ...(s as any).paulo, data_aposentadoria: e.target.value },
+                      }))
+                    }
+                    className="w-full mt-1 p-3 rounded-xl border bg-white"
+                    placeholder="Ex.: 15/08/2032"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-gray-50 p-4">
+              <div className="text-[11px] font-black uppercase text-gray-700 mb-3">Débora</div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase text-gray-500">NIT</label>
+                  <input
+                    value={(inssForm as any).debora?.nit || ""}
+                    onChange={(e) =>
+                      setInssForm((s: any) => ({
+                        ...s,
+                        debora: { ...(s as any).debora, nit: e.target.value },
+                      }))
+                    }
+                    className="w-full mt-1 p-3 rounded-xl border bg-white"
+                    placeholder="NIT da Débora"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase text-gray-500">Total parcelas</label>
+                  <input
+                    type="number"
+                    value={Number((inssForm as any).debora?.total_parcelas ?? 0)}
+                    onChange={(e) =>
+                      setInssForm((s: any) => ({
+                        ...s,
+                        debora: {
+                          ...(s as any).debora,
+                          total_parcelas: Number(e.target.value),
+                        },
+                      }))
+                    }
+                    className="w-full mt-1 p-3 rounded-xl border bg-white"
+                    placeholder="Ex.: 12"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="text-[10px] font-black uppercase text-gray-500">
+                    Data aposentadoria (dd/mm/aaaa)
+                  </label>
+                  <input
+                    value={(inssForm as any).debora?.data_aposentadoria || ""}
+                    onChange={(e) =>
+                      setInssForm((s: any) => ({
+                        ...s,
+                        debora: { ...(s as any).debora, data_aposentadoria: e.target.value },
+                      }))
+                    }
+                    className="w-full mt-1 p-3 rounded-xl border bg-white"
+                    placeholder="Ex.: 15/08/2032"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-2 justify-end">
+            <button
+              type="button"
+              onClick={() => setInssOpen(false)}
+              className="px-4 py-2 rounded-xl border bg-white text-[10px] font-black uppercase shadow-sm"
+            >
+              Cancelar
+            </button>
+
+            <button
+              type="button"
+              onClick={saveInssConfig}
+              className="px-4 py-2 rounded-xl bg-bb-blue text-white text-[10px] font-black uppercase shadow-lg"
+            >
+              Salvar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
     </div>
   );
 };
