@@ -18,6 +18,7 @@ import Investments from "./components/Investments";
 import TaxReports from "./components/TaxReports";
 import ImportSection from "./components/ImportSection";
 import Settings from "./components/Settings";
+import InssBrasil from "./components/InssBrasil";
 
 import { auth, db } from "./lib/firebase";
 import {
@@ -34,6 +35,8 @@ import {
   getStorageMode,
   setStorageMode as setStorageModeCloud,
   listHouseholdItems,
+  listInssConfigs,
+  listInssRecords,
   upsertHouseholdItem,
   deleteHouseholdItem,
 } from "./lib/cloudStore";
@@ -46,6 +49,8 @@ import type {
   Transacao,
   Receipt,
   InvestmentAsset,
+  InssRecord,
+  InssYearlyConfig,
 } from "./types";
 import { TipoTransacao } from "./types";
 
@@ -195,6 +200,8 @@ export default function App() {
   const [orcamentos, setOrcamentos] = useState<Orcamento[]>([]);
   const [transacoes, setTransacoes] = useState<Transacao[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [inssRecords, setInssRecords] = useState<InssRecord[]>([]);
+  const [inssConfigs, setInssConfigs] = useState<InssYearlyConfig[]>([]);
   const [ledgerRefreshToken, setLedgerRefreshToken] = useState<number>(0);
   const [receiptsRefreshToken, setReceiptsRefreshToken] = useState<number>(0);
   const [investments, setInvestments] = useState<InvestmentAsset[]>([]);
@@ -233,6 +240,12 @@ export default function App() {
           setInvestments(
             safeJsonParse(localStorage.getItem(lsKey("investments")), [])
           );
+          setInssRecords(
+            safeJsonParse(localStorage.getItem(lsKey("inssRecords")), [])
+          );
+          setInssConfigs(
+            safeJsonParse(localStorage.getItem(lsKey("inssConfigs")), [])
+          );
           setExchangeRates(
             safeJsonParse(localStorage.getItem(lsKey("exchangeRates")), {
               PT: 1,
@@ -269,6 +282,20 @@ export default function App() {
           setReceipts(receiptsCloud);
           setInvestments(investmentsCloud);
 
+          // INSS: carregamento isolado (não pode derrubar o carregamento global)
+          try {
+            const [cfgs, recs] = await Promise.all([
+              listInssConfigs(householdId),
+              listInssRecords(householdId),
+            ]);
+            setInssConfigs(Array.isArray(cfgs) ? cfgs : []);
+            setInssRecords(Array.isArray(recs) ? recs : []);
+          } catch (e) {
+            console.warn("Falha ao carregar INSS (seguindo sem INSS):", e);
+            setInssConfigs([]);
+            setInssRecords([]);
+          }
+
           setExchangeRates(
             safeJsonParse(localStorage.getItem(lsKey("exchangeRates")), {
               PT: 1,
@@ -285,6 +312,8 @@ export default function App() {
         setTransacoes([]);
         setReceipts([]);
         setInvestments([]);
+        setInssConfigs([]);
+        setInssRecords([]);
       } finally {
         setLoadingData(false);
       }
@@ -317,8 +346,15 @@ export default function App() {
     localStorage.setItem(lsKey("investments"), JSON.stringify(investments));
   }, [investments]);
   useEffect(() => {
+    localStorage.setItem(lsKey("inssRecords"), JSON.stringify(inssRecords));
+  }, [inssRecords]);
+  useEffect(() => {
+    localStorage.setItem(lsKey("inssConfigs"), JSON.stringify(inssConfigs));
+  }, [inssConfigs]);
+  useEffect(() => {
     localStorage.setItem(lsKey("exchangeRates"), JSON.stringify(exchangeRates));
   }, [exchangeRates]);
+
 
   // Sprint 3.3: default de conta/recebimento para Recibos/Lançamentos vinculados
   // PT → NB | BR → BB (fallback para 1ª forma de pagamento cadastrada)
@@ -383,6 +419,28 @@ export default function App() {
     },
     [householdId]
   );
+
+  // -------------------- INSS (CRUD mínimo - Sprint 4.1) --------------------
+  const onSaveInssRecord = useCallback(
+    async (r: InssRecord) => {
+      if (isCloud) {
+        const saved = await upsertCloud<InssRecord>("inssRecords", r);
+        setInssRecords((prev) => upsertLocal(prev, saved));
+      } else {
+        setInssRecords((prev) => upsertLocal(prev, r));
+      }
+    },
+    [isCloud, upsertCloud, upsertLocal]
+  );
+
+  const onDeleteInssRecord = useCallback(
+    async (id: string) => {
+      if (isCloud) await deleteCloud("inssRecords", id);
+      setInssRecords((prev) => deleteLocal(prev, id));
+    },
+    [isCloud, deleteCloud, deleteLocal]
+  );
+
 
   // -------------------- HANDLERS --------------------
   const onSaveTransacao = useCallback(
@@ -824,7 +882,14 @@ export default function App() {
       case "calendar":
         return <Calendar transacoes={transacoes} />;
       case "inss":
-        return <div className="p-6">Módulo INSS (em breve)</div>;
+        return (
+          <InssBrasil
+            records={inssRecords}
+            configs={inssConfigs}
+            onSave={onSaveInssRecord}
+            onDelete={onDeleteInssRecord}
+          />
+        );
       case "receipts":
         return (
           <Receipts
