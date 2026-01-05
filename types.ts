@@ -76,6 +76,8 @@ export interface Transacao {
   recorrencia_grupo_id?: string;
   recorrencia_seq?: number;
   receipt_id?: string;
+  /** Sprint 4.4: vínculo com registro INSS (quando aplicável). */
+  inss_record_id?: string;
   parcela_atual?: number;
   total_parcelas?: number;
   saldo_devedor_restante?: number;
@@ -117,6 +119,8 @@ export interface Receipt {
 
 export interface InssRecord {
   id: string;
+  /** Sprint 4.4: id do lançamento vinculado no Ledger (transacoes). */
+  transacao_id?: string;
   numero_parcela: number;
   quem: 'Paulo' | 'Débora';
   competencia: string;

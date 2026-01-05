@@ -423,14 +423,100 @@ export default function App() {
   // -------------------- INSS (CRUD mínimo - Sprint 4.1) --------------------
   const onSaveInssRecord = useCallback(
     async (r: InssRecord) => {
+      // Sprint 4.4: ao salvar/editar um inssRecord, criar/atualizar transação vinculada no Ledger.
+      const recId = r?.id || newId();
+
+      const existing =
+        recId ? inssRecords.find((x) => x.id === recId) : undefined;
+      const transacaoId =
+        (r as any)?.transacao_id ||
+        (existing as any)?.transacao_id ||
+        newId();
+
+      const recordToPersist: InssRecord = {
+        ...r,
+        id: recId,
+        transacao_id: transacaoId,
+      };
+
+      // Resolve NIT a partir da config do ano da competência (apenas para descrição padronizada)
+      const ano =
+        Number(String(recordToPersist.competencia ?? "").slice(0, 4)) ||
+        new Date().getFullYear();
+      const cfg = inssConfigs.find((c) => Number(c?.ano) === ano);
+      const nit =
+        recordToPersist.quem === "Paulo" ? cfg?.paulo?.nit : cfg?.debora?.nit;
+
+      // Resolve defaults de categoria/conta (BR) quando disponíveis
+      const upper = (s: any) => String(s ?? "").toUpperCase();
+      const cats = Array.isArray(categorias) ? categorias : [];
+      const despCats = cats.filter((c) => c?.tipo === TipoTransacao.DESPESA);
+
+      const catPick =
+        despCats.find((c) => upper(c?.nome).includes("INSS")) ||
+        despCats.find((c) => upper(c?.nome).includes("IMPOST")) ||
+        despCats.find((c) => upper(c?.nome).includes("TRIBUT")) ||
+        despCats[0];
+
+      const contas = Array.isArray(catPick?.contas) ? catPick!.contas : [];
+      const contaPick =
+        contas.find(
+          (ct) =>
+            ct?.codigo_pais === "BR" && upper(ct?.nome).includes("INSS")
+        ) ||
+        contas.find(
+          (ct) =>
+            ct?.codigo_pais === "BR" && upper(ct?.nome).includes("PREVID")
+        ) ||
+        contas.find((ct) => ct?.codigo_pais === "BR") ||
+        contas[0];
+
+      const descricao = `INSS - ${recordToPersist.quem} - NIT ${
+        nit ?? ""
+      } - Parcela ${recordToPersist.numero_parcela} - Competência ${
+        recordToPersist.competencia
+      } - Base ${Number(recordToPersist.salario_base ?? 0)}`;
+
+      const tx: Transacao = {
+        id: transacaoId,
+        workspace_id: "fam_01",
+        codigo_pais: "BR",
+        categoria_id: catPick?.id || "",
+        conta_contabil_id: contaPick?.id || "",
+        forma_pagamento_id: getDefaultBankId("BR"),
+        tipo: TipoTransacao.DESPESA,
+        data_competencia: `${recordToPersist.competencia}-01`,
+        data_prevista_pagamento: recordToPersist.vencimento,
+        description: descricao,
+        observacao: "Gerado automaticamente (INSS Brasil)",
+        valor: Number(recordToPersist.valor ?? 0),
+        status: recordToPersist.status,
+        origem: "MANUAL",
+        inss_record_id: recordToPersist.id,
+      };
+
       if (isCloud) {
-        const saved = await upsertCloud<InssRecord>("inssRecords", r);
-        setInssRecords((prev) => upsertLocal(prev, saved));
+        // 1) garante o registro INSS persistido com transacao_id
+        await upsertCloud<InssRecord>("inssRecords", recordToPersist);
+        setInssRecords((prev) => upsertLocal(prev, recordToPersist));
+
+        // 2) cria/atualiza a transação vinculada no Ledger (sem duplicar)
+        const savedTx = await upsertCloud<Transacao>("transacoes", tx);
+        setTransacoes((prev) => upsertLocal(prev, savedTx as any));
       } else {
-        setInssRecords((prev) => upsertLocal(prev, r));
+        setInssRecords((prev) => upsertLocal(prev, recordToPersist));
+        setTransacoes((prev) => upsertLocal(prev, tx));
       }
     },
-    [isCloud, upsertCloud, upsertLocal]
+    [
+      isCloud,
+      upsertCloud,
+      upsertLocal,
+      categorias,
+      getDefaultBankId,
+      inssConfigs,
+      inssRecords,
+    ]
   );
 
   const onDeleteInssRecord = useCallback(
