@@ -22,27 +22,58 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
 
   const [formData, setFormData] = useState<Partial<InssRecord>>(initialForm);
 
-  const stats = useMemo(() => {
-    const pauloRecs = records.filter(r => r.quem === 'Paulo');
-    const deboraRecs = records.filter(r => r.quem === 'Débora');
-    const config = configs.find(c => c.ano === 2025) || configs[0] || { 
-      paulo: { total_parcelas: 0, nit: '', data_aposentadoria: '' }, 
-      debora: { total_parcelas: 0, nit: '', data_aposentadoria: '' } 
+  const vencimentoPreview = useMemo(() => {
+    if (!formData.competencia) return '';
+    const compDate = new Date(formData.competencia + "-01");
+    const dueDate = new Date(compDate.getFullYear(), compDate.getMonth() + 1, 15);
+    return dueDate.toISOString().split('T')[0];
+  }, [formData.competencia]);
+
+
+    const stats = useMemo(() => {
+    const yearNow = new Date().getFullYear();
+    const configSorted = [...configs].sort((a, b) => b.ano - a.ano);
+    const config = configs.find(c => c.ano === yearNow) || configSorted[0] || {
+      ano: yearNow,
+      salario_base: 0,
+      percentual_inss: 0,
+      paulo: { total_parcelas: 0, nit: '', data_aposentadoria: '' },
+      debora: { total_parcelas: 0, nit: '', data_aposentadoria: '' }
     };
 
+    const pauloRecsYear = records.filter(r => r.quem === 'Paulo' && r.competencia?.startsWith(String(config.ano)));
+    const deboraRecsYear = records.filter(r => r.quem === 'Débora' && r.competencia?.startsWith(String(config.ano)));
+
+    const pauloPagas = pauloRecsYear.filter(r => r.status === 'PAGO').length;
+    const deboraPagas = deboraRecsYear.filter(r => r.status === 'PAGO').length;
+
+    const pauloTotal = config.paulo?.total_parcelas ?? 0;
+    const deboraTotal = config.debora?.total_parcelas ?? 0;
+
+    const pauloAPagar = Math.max(pauloTotal - pauloPagas, 0);
+    const deboraAPagar = Math.max(deboraTotal - deboraPagas, 0);
+
+    const total = pauloTotal + deboraTotal;
+    const pagas = pauloPagas + deboraPagas;
+    const a_pagar = Math.max(total - pagas, 0);
+
     return {
+      ano: config.ano,
       paulo: {
-        total: config.paulo?.total_parcelas || 1,
-        pagas: pauloRecs.filter(r => r.status === 'PAGO').length,
+        total: pauloTotal,
+        pagas: pauloPagas,
+        a_pagar: pauloAPagar,
         nit: config.paulo?.nit || 'N/A',
         aposentadoria: config.paulo?.data_aposentadoria || ''
       },
       debora: {
-        total: config.debora?.total_parcelas || 1,
-        pagas: deboraRecs.filter(r => r.status === 'PAGO').length,
+        total: deboraTotal,
+        pagas: deboraPagas,
+        a_pagar: deboraAPagar,
         nit: config.debora?.nit || 'N/A',
         aposentadoria: config.debora?.data_aposentadoria || ''
-      }
+      },
+      consolidado: { total, pagas, a_pagar }
     };
   }, [records, configs]);
 
@@ -79,7 +110,7 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
   return (
     <div className="p-6 space-y-8 pb-24 animate-in fade-in duration-700">
       {/* Cards de Progresso Auditoria */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="bg-white p-8 rounded-[2.5rem] border border-gray-100 shadow-sm relative overflow-hidden group">
            <div className="absolute top-0 right-0 p-8 opacity-5 text-6xl group-hover:scale-110 transition-transform">🇧🇷</div>
            <div className="flex justify-between items-start mb-6">
@@ -90,6 +121,7 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
               <div className="text-right">
                  <p className="text-[10px] font-black text-bb-blue uppercase tracking-widest mb-1 italic">Vínculo Previdenciário</p>
                  <span className="text-3xl font-black text-bb-blue italic tracking-tighter">{stats.paulo.pagas} / {stats.paulo.total}</span>
+                 <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1 italic">A pagar: {stats.paulo.a_pagar}</p>
               </div>
            </div>
            
@@ -114,6 +146,7 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
               <div className="text-right">
                  <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1 italic">Vínculo Previdenciário</p>
                  <span className="text-3xl font-black text-emerald-600 italic tracking-tighter">{stats.debora.pagas} / {stats.debora.total}</span>
+                 <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1 italic">A pagar: {stats.debora.a_pagar}</p>
               </div>
            </div>
            
@@ -124,6 +157,33 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
               <div className="flex justify-between items-center bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100">
                  <span className="text-[9px] font-black text-emerald-600 uppercase italic">Previsão Aposentadoria</span>
                  <span className="text-[11px] font-black text-emerald-600 italic">{stats.debora.aposentadoria ? new Date(stats.debora.aposentadoria).toLocaleDateString('pt-BR') : 'Aguardando Cálculo'}</span>
+              </div>
+           </div>
+        </div>
+
+        <div className="bg-gradient-to-br from-bb-blue to-bb-blue/90 p-8 rounded-[2.5rem] border border-bb-blue/10 shadow-sm relative overflow-hidden group text-white">
+           <div className="absolute top-0 right-0 p-8 opacity-10 text-6xl group-hover:scale-110 transition-transform">📅</div>
+           <div className="flex justify-between items-start mb-6">
+              <div>
+                 <h3 className="text-2xl font-black italic uppercase tracking-tighter leading-none">Consolidado</h3>
+                 <p className="text-[10px] opacity-80 font-bold uppercase tracking-widest mt-2 italic">Ano-base: {stats.ano}</p>
+              </div>
+              <div className="text-right">
+                 <p className="text-[10px] font-black uppercase tracking-widest mb-1 italic opacity-80">Pagas / Total</p>
+                 <span className="text-3xl font-black tracking-tighter">{stats.consolidado.pagas} / {stats.consolidado.total}</span>
+              </div>
+           </div>
+
+           <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                 <span className="text-[11px] font-black uppercase tracking-widest opacity-80 italic">A pagar</span>
+                 <span className="text-[13px] font-black tracking-tight">{stats.consolidado.a_pagar}</span>
+              </div>
+              <div className="w-full bg-white/20 rounded-full h-3 overflow-hidden">
+                <div
+                  className="h-full bg-white/90 rounded-full transition-all duration-700"
+                  style={{ width: stats.consolidado.total > 0 ? `${Math.min((stats.consolidado.pagas / stats.consolidado.total) * 100, 100)}%` : '0%' }}
+                />
               </div>
            </div>
         </div>
@@ -202,6 +262,9 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
                <div className="space-y-1">
                   <label className="text-[9px] font-black text-bb-blue uppercase italic ml-1">Mês Ref.</label>
                   <input type="month" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-bold border-none outline-none focus:ring-2 focus:ring-bb-blue" value={formData.competencia} onChange={e => setFormData({...formData, competencia: e.target.value})} />
+                  <p className="text-[8px] text-gray-400 font-bold uppercase mt-1 ml-1 italic tracking-widest">
+                    Vencimento padrão: {vencimentoPreview ? new Date(vencimentoPreview + "T12:00:00").toLocaleDateString('pt-BR') : '—'}
+                  </p>
                </div>
                <div className="space-y-1">
                   <label className="text-[9px] font-black text-bb-blue uppercase italic ml-1">Parcela Nº</label>
