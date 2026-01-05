@@ -17,6 +17,8 @@ import {
 
 import type { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
 
+import type { InssRecord, InssYearlyConfig } from "../types";
+
 export type StorageMode = "local" | "cloud";
 
 // ✅ ESSENCIAL para o build do App.tsx
@@ -166,6 +168,44 @@ export async function deleteHouseholdItem(
 ) {
   const ref = doc(db, `${householdPath(householdId)}/${subcollection}/${id}`);
   await deleteDoc(ref);
+}
+
+/** -------------------- INSS (helpers) --------------------
+ * Objetivo: listar configs/records mesmo que o usuário crie docs manualmente
+ * sem campos de ordenação (ex.: updatedAt). Evita quebrar o carregamento global.
+ */
+
+export const INSS_CONFIGS_SUB = "inssConfigs";
+export const INSS_RECORDS_SUB = "inssRecords";
+
+export async function listInssConfigs(
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<InssYearlyConfig[]> {
+  const col = collection(db, `${householdPath(householdId)}/${INSS_CONFIGS_SUB}`);
+  const q = query(col, limit(500));
+  const snap = await getDocs(q);
+
+  const items = snap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as any) }))
+    // configs: ordenar por ano desc (fallback 0)
+    .sort((a: any, b: any) => Number(b?.ano ?? 0) - Number(a?.ano ?? 0));
+
+  return items as any;
+}
+
+export async function listInssRecords(
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<InssRecord[]> {
+  const col = collection(db, `${householdPath(householdId)}/${INSS_RECORDS_SUB}`);
+  const q = query(col, limit(500));
+  const snap = await getDocs(q);
+
+  const items = snap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as any) }))
+    // records: ordenar por vencimento desc (fallback string vazia)
+    .sort((a: any, b: any) => String(b?.vencimento ?? "").localeCompare(String(a?.vencimento ?? "")));
+
+  return items as any;
 }
 
 // Sprint 2.8: paginação de transações no Firestore (Ledger)
