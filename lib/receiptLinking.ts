@@ -18,14 +18,15 @@ export type LinkWarning = {
 };
 
 /**
- * Importante (estado atual do repo): o upsertCloud usa `item.id` como ID do documento.
- * Portanto, por enquanto, assumimos:
- *  - Receipt.id é o docId do recibo
- *  - Transacao.id é o docId do lançamento
- * Quando migrarmos para docIds automáticos, estas funções viram o ponto único de ajuste.
+ * Importante:
+ *  - Sprint 3.2: docId do Recibo = Receipt.internal_id
+ *  - docId da Transação vinculada = `TX_${internal_id}` (ou outro txId existente em receipt.transacao_id)
+ * Estas funções viram o ponto único de ajuste para futuras migrações.
  */
 export function getReceiptDocId(receipt: Receipt): string {
-  return receipt.id;
+  // Sprint 3.2: o docId do recibo passa a ser o `internal_id`.
+  // Fallback para compatibilidade com dados legados.
+  return receipt.internal_id || receipt.id;
 }
 
 export function getTransacaoDocId(tx: Transacao): string {
@@ -33,7 +34,7 @@ export function getTransacaoDocId(tx: Transacao): string {
 }
 
 export function statusFromIsPaid(isPaid: boolean): StatusTransacao {
-  return isPaid ? "PAGO" : "PENDENTE";
+  return isPaid ? "PAGO" : "PLANEJADO";
 }
 
 export function isPaidFromStatus(status?: StatusTransacao): boolean {
@@ -51,7 +52,7 @@ export function pickReceiptAmount(receipt: Receipt): number {
 
 /** Data de competência padrão para a transação derivada de recibo. */
 export function pickReceiptCompetenciaDate(receipt: Receipt): string {
-  return receipt.issue_date;
+  return receipt.pay_date ?? receipt.issue_date;
 }
 
 /** Data prevista de pagamento padrão. Se existir pay_date, usa; senão issue_date. */
