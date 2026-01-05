@@ -6,6 +6,7 @@ import type {
   CategoriaContabil,
   FormaPagamento,
   Fornecedor,
+    ImportMappingUsed,
   Receipt,
   Transacao,
   InssRecord,
@@ -84,6 +85,8 @@ export default function ImportExport(props: ImportExportProps) {
   } = props;
 
   const [tab, setTab] = useState<ImportExportTab>("import");
+
+  const [lastMappingUsed, setLastMappingUsed] = useState<ImportMappingUsed | null>(null);
 
   // Export filters
   const [filterMode, setFilterMode] = useState<ExportFilterMode>("ALL");
@@ -358,6 +361,7 @@ export default function ImportExport(props: ImportExportProps) {
           fornecedores={fornecedores}
           onSaveTx={onSaveTx}
           onSaveReceipt={onSaveReceipt}
+          onMappingUsed={(m) => setLastMappingUsed(m)}
         />
       )}
 
