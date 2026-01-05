@@ -160,3 +160,103 @@ export interface InvestmentAsset {
   yield_target_monthly?: number;
   history?: InvestmentTransaction[];
 }
+
+/** -------------------- Sprint 5: Import/Export + Logs + Paridade -------------------- */
+
+export type ImportType =
+  | "LANCAMENTOS_PT"
+  | "LANCAMENTOS_BR"
+  | "RECIBOS"
+  | "INSS";
+
+export type ImportEntityKey =
+  | "transacoes"
+  | "receipts"
+  | "inssConfigs"
+  | "inssRecords";
+
+export type ImportMappingColumns = Record<string, string>; // campo -> nome da coluna no arquivo
+
+export type ImportMappingUsed = {
+  autoDetected: boolean;
+  columns: ImportMappingColumns;
+};
+
+export type ImportDateRange = {
+  min: string; // YYYY-MM-DD
+  max: string; // YYYY-MM-DD
+};
+
+export type ImportCounts = {
+  totalRows: number;
+  validRows: number;
+  inserted: number;
+  updated: number;
+  dedupedSkipped: number;
+  invalidSkipped: number;
+};
+
+export type ImportWarnings = {
+  missingCategorias?: number;
+  missingItens?: number;
+  missingContas?: number;
+  missingFornecedores?: number;
+  invalidDates?: number;
+  invalidValues?: number;
+};
+
+/**
+ * Snapshot de paridade persistido no ImportLog.
+ * Sprint 5.1: contrato mínimo (evolui no 5.6).
+ */
+export type ParitySnapshot = {
+  /**
+   * chave agregadora (ex.: 2026-01|PT|categoriaId|contaId)
+   * valores: totais e divergências.
+   */
+  totalsByKey: Record<
+    string,
+    {
+      fileTotal: number;
+      appTotal: number;
+      diff: number;
+      diffPct?: number;
+      countFile?: number;
+      countApp?: number;
+    }
+  >;
+  topDivergences?: Array<{
+    key: string;
+    fileTotal: number;
+    appTotal: number;
+    diff: number;
+    diffPct?: number;
+  }>;
+};
+
+export type ImportCreatedBy = {
+  uid: string;
+  displayName?: string | null;
+  email?: string | null;
+};
+
+export type ImportSourceFile = {
+  name: string;
+  size?: number;
+  lastModified?: number;
+};
+
+export interface ImportLog {
+  id: string;
+  householdId: string;
+  createdAt?: any; // Timestamp (evita dependência direta do firebase no types)
+  createdBy: ImportCreatedBy;
+  importType: ImportType;
+  sourceFile?: ImportSourceFile;
+  mappingUsed?: ImportMappingUsed;
+  dateRange?: ImportDateRange;
+  counts: ImportCounts;
+  warnings?: ImportWarnings;
+  paritySnapshot?: ParitySnapshot;
+  notes?: string;
+}

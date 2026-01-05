@@ -17,7 +17,7 @@ import {
 
 import type { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
 
-import type { InssRecord, InssYearlyConfig } from "../types";
+import type { ImportLog, InssRecord, InssYearlyConfig } from "../types";
 
 export type StorageMode = "local" | "cloud";
 
@@ -168,6 +168,65 @@ export async function deleteHouseholdItem(
 ) {
   const ref = doc(db, `${householdPath(householdId)}/${subcollection}/${id}`);
   await deleteDoc(ref);
+}
+
+/** -------------------- Sprint 5: IMPORT LOGS (helpers) -------------------- */
+
+export const IMPORT_LOGS_SUB = "importLogs";
+
+/**
+ * Lista logs de importação (mais recentes primeiro).
+ * Fallback seguro: se faltar createdAt, ordena localmente.
+ */
+export async function listImportLogs(params?: {
+  householdId?: string;
+  limitSize?: number;
+}): Promise<ImportLog[]> {
+  const householdId = params?.householdId ?? DEFAULT_HOUSEHOLD_ID;
+  const limitSize = params?.limitSize ?? 50;
+
+  const col = collection(db, `${householdPath(householdId)}/${IMPORT_LOGS_SUB}`);
+
+  // Se createdAt existir, usamos orderBy; caso contrário, caímos em listagem simples.
+  try {
+    const q = query(col, orderBy("createdAt", "desc"), limit(limitSize));
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as any;
+  } catch {
+    const q = query(col, limit(limitSize));
+    const snap = await getDocs(q);
+    const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as any[];
+    items.sort((a, b) => {
+      const aMs = (a?.createdAt?.toMillis?.() ?? 0) as number;
+      const bMs = (b?.createdAt?.toMillis?.() ?? 0) as number;
+      return bMs - aMs;
+    });
+    return items as any;
+  }
+}
+
+/**
+ * Cria/atualiza um ImportLog.
+ * Sprint 5.1: gravamos createdAt/updatedAt (Timestamp) para suportar ordenação.
+ */
+export async function upsertImportLog(
+  log: Partial<ImportLog> & { householdId?: string },
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<string> {
+  const col = collection(db, `${householdPath(householdId)}/${IMPORT_LOGS_SUB}`);
+  const ref = log.id ? doc(col, log.id) : doc(col);
+  const now = Timestamp.now();
+
+  const payload: any = {
+    ...log,
+    householdId,
+    updatedAt: now,
+    ...(log.id ? {} : { createdAt: now }),
+  };
+  delete payload.id;
+
+  await setDoc(ref, payload, { merge: true });
+  return ref.id;
 }
 
 /** -------------------- INSS (helpers) --------------------
