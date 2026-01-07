@@ -93,6 +93,27 @@ function monthRange(start: MonthKey, end: MonthKey): MonthKey[] {
   return out;
 }
 
+function addMonthsToKey(base: MonthKey, add: number): MonthKey {
+  const [y0, m0] = base.split("-").map((x) => Number(x));
+  let y = y0;
+  let m = m0 + add;
+  while (m > 12) {
+    m -= 12;
+    y += 1;
+  }
+  while (m <= 0) {
+    m += 12;
+    y -= 1;
+  }
+  return monthKeyFromYM(y, m);
+}
+
+function firstDayOfMonthKey(mk: MonthKey): Date {
+  const [y, m] = mk.split("-").map((x) => Number(x));
+  return new Date(y, (m || 1) - 1, 1, 0, 0, 0, 0);
+}
+
+
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
@@ -182,6 +203,7 @@ export default function Dashboard({
   const [periodStart, setPeriodStart] = useState<MonthKey>(defaultStart);
   const [periodEnd, setPeriodEnd] = useState<MonthKey>(defaultEnd);
   const [selectedCatId, setSelectedCatId] = useState<string | null>(null);
+  const [projectionMonthsCount, setProjectionMonthsCount] = useState<number>(6);
 
   const normalizedPeriod = useMemo(() => {
     const s = String(periodStart);
@@ -378,6 +400,105 @@ export default function Dashboard({
     return `${s} → ${e}`;
   }, [normalizedPeriod]);
 
+  const projectionStart = useMemo<MonthKey>(() => {
+    return monthKeyFromDate(new Date());
+  }, []);
+
+  const projectionMonths = useMemo(() => {
+    const out: MonthKey[] = [];
+    for (let i = 0; i < projectionMonthsCount; i++) out.push(addMonthsToKey(projectionStart, i));
+    return out;
+  }, [projectionStart, projectionMonthsCount]);
+
+  const projection = useMemo(() => {
+    const startDate = firstDayOfMonthKey(projectionStart);
+    const startMs = startDate.getTime();
+    const monthSet = new Set(projectionMonths);
+
+    const monthly = new Map<MonthKey, { entradas: number; saidas: number }>();
+    for (const mk of projectionMonths) monthly.set(mk, { entradas: 0, saidas: 0 });
+
+    let saldoInicial = 0;
+
+    for (const t of txs) {
+      // país/visão
+      if (viewMode !== "GLOBAL") {
+        if ((t?.codigo_pais || "PT") !== viewMode) continue;
+      }
+
+      const d =
+        parseISODateLike(t?.data_prevista_pagamento) ||
+        parseISODateLike(t?.data_competencia) ||
+        parseISODateLike(t?.date);
+      if (!d) continue;
+
+      const status = String(t?.status ?? "");
+      const tipo = String(t?.tipo ?? "");
+      const val = safeNum(getConverted(t?.valor, t?.codigo_pais));
+      const ms = d.getTime();
+
+      // saldo inicial: somente PAGO antes do mês inicial da projeção
+      if (status === "PAGO" && ms < startMs) {
+        if (tipo === "RECEITA") saldoInicial += val;
+        else if (tipo === "DESPESA" || tipo === "PAGAMENTO_FATURA") saldoInicial -= val;
+        continue;
+      }
+
+      // projeção: somente não-pago (pendente/planejado/atrasado)
+      if (status === "PAGO") continue;
+
+      let mk = monthKeyFromDate(d);
+      // vencidos/atrasados antes do mês inicial entram no mês inicial
+      if (ms < startMs) mk = projectionStart;
+
+      if (!monthSet.has(mk)) continue;
+
+      const rec = monthly.get(mk) || { entradas: 0, saidas: 0 };
+      if (tipo === "RECEITA") rec.entradas += val;
+      else if (tipo === "DESPESA" || tipo === "PAGAMENTO_FATURA") rec.saidas += val;
+      monthly.set(mk, rec);
+    }
+
+    let saldo = saldoInicial;
+    const rows = projectionMonths.map((mk) => {
+      const rec = monthly.get(mk) || { entradas: 0, saidas: 0 };
+      const net = rec.entradas - rec.saidas;
+      saldo += net;
+      return {
+        mes: mk,
+        entradas: rec.entradas,
+        saidas: rec.saidas,
+        net,
+        saldo,
+      };
+    });
+
+    return { saldoInicial, rows };
+  }, [txs, viewMode, rates, projectionMonths, projectionStart]);
+
+  const projectionChart = useMemo(() => {
+    const rows = projection?.rows || [];
+    if (rows.length === 0) return { points: "", min: 0, max: 0 };
+    const vals = rows.map((r) => safeNum(r.saldo));
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const span = max - min || 1;
+
+    const W = 520;
+    const H = 120;
+    const P = 12;
+
+    const pts = rows
+      .map((r, i) => {
+        const x = P + (i * (W - P * 2)) / Math.max(1, rows.length - 1);
+        const y = P + (H - P * 2) * (1 - (safeNum(r.saldo) - min) / span);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(" ");
+
+    return { points: pts, min, max };
+  }, [projection]);
+
   return (
     <div className="space-y-6">
       <div className="bg-white p-6 rounded-[2rem] border shadow-sm">
@@ -473,7 +594,81 @@ export default function Dashboard({
             </div>
           </div>
 
-          <div className="bg-white p-6 rounded-[2rem] border shadow-sm">
+                    <div className="bg-white p-6 rounded-[2rem] border shadow-sm">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h3 className="text-sm font-black uppercase text-bb-blue">Projeção de caixa</h3>
+                <p className="text-[11px] text-gray-500 font-semibold mt-1">
+                  Saldo inicial (histórico pago): <b>{fmtMoney(projection.saldoInicial, viewMode)}</b>
+                </p>
+              </div>
+
+              <div className="flex items-end gap-3">
+                <div>
+                  <label className="text-[10px] font-black uppercase text-gray-500">N meses</label>
+                  <select
+                    value={projectionMonthsCount}
+                    onChange={(e) => setProjectionMonthsCount(Number(e.target.value))}
+                    className="mt-1 p-3 rounded-xl border bg-gray-50 text-[12px]"
+                  >
+                    {[3, 6, 9, 12].map((n) => (
+                      <option key={`n-${n}`} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4">
+              {(projection?.rows || []).length === 0 ? (
+                <div className="text-[12px] text-gray-500 font-semibold">Sem dados para projetar.</div>
+              ) : (
+                <div className="w-full overflow-x-auto">
+                  <svg
+                    viewBox="0 0 520 120"
+                    width="100%"
+                    height="120"
+                    className="rounded-xl bg-gray-50 border"
+                    preserveAspectRatio="none"
+                  >
+                    <polyline
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      className="text-bb-blue"
+                      points={projectionChart.points}
+                    />
+                  </svg>
+                </div>
+              )}
+            </div>
+
+            <div className="mt-4 overflow-auto">
+              <table className="w-full text-left text-[12px]">
+                <thead className="text-[10px] uppercase text-gray-500">
+                  <tr>
+                    <th className="py-2">Mês</th>
+                    <th className="py-2 text-right">Entradas</th>
+                    <th className="py-2 text-right">Saídas</th>
+                    <th className="py-2 text-right">Saldo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(projection?.rows || []).map((r) => (
+                    <tr key={`proj-${r.mes}`} className="border-t">
+                      <td className="py-3 font-semibold">{r.mes}</td>
+                      <td className="py-3 text-right text-green-700 font-semibold">{fmtMoney(r.entradas, viewMode)}</td>
+                      <td className="py-3 text-right text-red-700 font-semibold">{fmtMoney(r.saidas, viewMode)}</td>
+                      <td className="py-3 text-right font-black">{fmtMoney(r.saldo, viewMode)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+<div className="bg-white p-6 rounded-[2rem] border shadow-sm">
             <div className="flex items-center justify-between gap-4 flex-wrap">
               <div>
                 <h3 className="text-sm font-black uppercase text-bb-blue">Orçamento (Real x Orçado x Tendência)</h3>
