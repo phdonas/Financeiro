@@ -1095,6 +1095,7 @@ export default function App() {
             viewMode={viewMode}
             transacoes={transacoes}
             categorias={categorias}
+            orcamentos={orcamentos}
             investments={investments}
             exchangeRates={exchangeRates}
             storageMode={storageMode}
