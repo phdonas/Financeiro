@@ -795,16 +795,65 @@ export default function App() {
 
   const onSaveOrcamento = useCallback(
     async (o: Orcamento) => {
+      // normaliza e garante unicidade por chave (pais + ano + mes + categoria)
+      const round2 = (n: any) => {
+        const v = Number(n);
+        if (!Number.isFinite(v)) return 0;
+        return Math.round(v * 100) / 100;
+      };
+
+      const normalized: Orcamento = {
+        ...(o as any),
+        codigo_pais: ((o as any)?.codigo_pais || "PT") as any,
+        categoria_id: String((o as any)?.categoria_id || "").trim(),
+        ano: Number((o as any)?.ano || new Date().getFullYear()),
+        mes: Number((o as any)?.mes || new Date().getMonth() + 1),
+        valor_meta: round2((o as any)?.valor_meta),
+      } as any;
+
+      const makeDeterministicId = (x: Orcamento) => {
+        const raw = `orc_${String((x as any)?.codigo_pais || "PT")}_${Number((x as any)?.ano)}_${Number(
+          (x as any)?.mes
+        )}_${String((x as any)?.categoria_id || "")}`;
+        // Firestore doc id: evitar caracteres estranhos e limitar tamanho
+        return raw.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 140);
+      };
+
+      const sameKey = (x: any) =>
+        String(x?.categoria_id || "") === normalized.categoria_id &&
+        String(x?.codigo_pais || "PT") === String(normalized.codigo_pais || "PT") &&
+        Number(x?.ano) === Number(normalized.ano) &&
+        Number(x?.mes) === Number(normalized.mes);
+
+      const deterministicId = makeDeterministicId(normalized);
+      normalized.id = deterministicId;
+
       if (isCloud) {
-        const saved = await upsertCloud<Orcamento>("orcamentos", o);
-        setOrcamentos((prev) => upsertLocal(prev, saved));
+        const saved = await upsertCloud<Orcamento>("orcamentos", normalized);
+
+        // Limpa duplicidades antigas (docId diferente, mesma chave) — best effort
+        const dups = (orcamentos || []).filter((x: any) => sameKey(x) && x?.id && x.id !== deterministicId);
+        for (const d of dups) {
+          try {
+            await deleteCloud("orcamentos", d.id);
+          } catch {
+            // best effort
+          }
+        }
+
+        setOrcamentos((prev) => {
+          const filtered = prev.filter((x: any) => !(sameKey(x) && x?.id && x.id !== deterministicId));
+          return upsertLocal(filtered, saved);
+        });
       } else {
-        setOrcamentos((prev) => upsertLocal(prev, o));
+        setOrcamentos((prev) => {
+          const filtered = prev.filter((x: any) => !(sameKey(x) && x?.id && x.id !== deterministicId));
+          return upsertLocal(filtered, normalized);
+        });
       }
     },
-    [isCloud, upsertCloud, upsertLocal]
+    [isCloud, upsertCloud, upsertLocal, deleteCloud, orcamentos]
   );
-
   const onDeleteOrcamento = useCallback(
     async (id: string) => {
       if (isCloud) await deleteCloud("orcamentos", id);

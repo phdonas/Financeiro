@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { TipoTransacao, InssYearlyConfig } from "../types";
+import type { Orcamento as OrcamentoModel } from "../types";
 
 type CountryCode = "PT" | "BR";
 
@@ -36,12 +37,7 @@ type Fornecedor = {
   countryCode?: CountryCode;
 };
 
-type Orcamento = {
-  id: string;
-  countryCode: CountryCode;
-  categoriaId: string;
-  valor: number;
-};
+type Orcamento = OrcamentoModel;
 
 interface SettingsProps {
   categorias: Categoria[];
@@ -147,7 +143,22 @@ const Settings: React.FC<SettingsProps> = ({
   const [itemForm, setItemForm] = useState<ContaItem>({ id: "", nome: "", codigo_pais: "PT" });
   const [fpForm, setFpForm] = useState<FormaPagamento>({ id: "", nome: "", categoria: "BANCO", countryCode: "PT" });
   const [supForm, setSupForm] = useState<Fornecedor>({ id: "", nome: "", countryCode: "PT" });
-  const [orcForm, setOrcForm] = useState<Orcamento>({ id: "", countryCode: "PT", categoriaId: "", valor: 0 });
+  const now = new Date();
+  const [orcFilterPais, setOrcFilterPais] = useState<CountryCode>("PT");
+  const [orcFilterAno, setOrcFilterAno] = useState<number>(now.getFullYear());
+  const [orcFilterMes, setOrcFilterMes] = useState<number>(0); // 0 = todos
+
+  const [orcForm, setOrcForm] = useState<Orcamento>(() => ({
+    id: "",
+    codigo_pais: "PT",
+    categoria_id: "",
+    ano: now.getFullYear(),
+    mes: now.getMonth() + 1,
+    valor_meta: 0,
+  }));
+  const [orcRecMeses, setOrcRecMeses] = useState<number[]>([now.getMonth() + 1]);
+  const [orcRecAnos, setOrcRecAnos] = useState<number>(1);
+  const [orcError, setOrcError] = useState<string>("");
 
   const [inssForm, setInssForm] = useState<InssYearlyConfig & { id?: string }>(() => ({
     id: undefined,
@@ -164,6 +175,58 @@ const Settings: React.FC<SettingsProps> = ({
     categorias.forEach((c) => m.set(c.id, c));
     return m;
   }, [categorias]);
+
+  const mesesLabel = useMemo(() => {
+    return [
+      "Jan",
+      "Fev",
+      "Mar",
+      "Abr",
+      "Mai",
+      "Jun",
+      "Jul",
+      "Ago",
+      "Set",
+      "Out",
+      "Nov",
+      "Dez",
+    ];
+  }, []);
+
+  const anosDisponiveis = useMemo(() => {
+    const ys = new Set<number>();
+    ys.add(new Date().getFullYear());
+    (orcamentos || []).forEach((o: any) => {
+      const y = Number(o?.ano);
+      if (Number.isFinite(y)) ys.add(y);
+    });
+    return Array.from(ys).sort((a, b) => b - a);
+  }, [orcamentos]);
+
+  const orcamentosFiltrados = useMemo(() => {
+    const list = Array.isArray(orcamentos) ? (orcamentos as any[]) : [];
+    return list
+      .filter((o) => {
+        const pais = (o?.codigo_pais || o?.countryCode || "PT") as CountryCode;
+        const ano = Number(o?.ano);
+        const mes = Number(o?.mes);
+        if (orcFilterPais && pais !== orcFilterPais) return false;
+        if (orcFilterAno && Number.isFinite(ano) && ano !== Number(orcFilterAno)) return false;
+        if (orcFilterMes && Number(orcFilterMes) > 0 && mes !== Number(orcFilterMes)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const ay = Number(a?.ano) || 0;
+        const by = Number(b?.ano) || 0;
+        if (by !== ay) return by - ay;
+        const am = Number(a?.mes) || 0;
+        const bm = Number(b?.mes) || 0;
+        if (bm !== am) return bm - am;
+        const ac = String(a?.categoria_id || "");
+        const bc = String(b?.categoria_id || "");
+        return ac.localeCompare(bc);
+      });
+  }, [orcamentos, orcFilterPais, orcFilterAno, orcFilterMes]);
 
   const selectedCategoria = useMemo(() => {
     if (!selectedCatId) return null;
@@ -410,13 +473,81 @@ const Settings: React.FC<SettingsProps> = ({
   }
 
   function openNewOrcamento() {
-    setOrcForm({ id: newId(), countryCode: "PT", categoriaId: categorias[0]?.id || "", valor: 0 });
+    const d = new Date();
+    const ano = d.getFullYear();
+    const mes = d.getMonth() + 1;
+    setOrcError("");
+    setOrcRecMeses([mes]);
+    setOrcRecAnos(1);
+    setOrcForm({
+      id: "",
+      codigo_pais: orcFilterPais || "PT",
+      categoria_id: categorias[0]?.id || "",
+      ano,
+      mes,
+      valor_meta: 0,
+    });
     setOrcOpen(true);
   }
   function saveOrcamento() {
-    if (!orcForm.categoriaId) return;
-    onSaveOrcamento({ ...orcForm, valor: Number(orcForm.valor || 0) });
-    setOrcOpen(false);
+    const meses = Array.from(new Set((orcRecMeses?.length ? orcRecMeses : [orcForm.mes]).map((m) => Number(m)).filter((m) => m >= 1 && m <= 12))).sort(
+      (a, b) => a - b
+    );
+    const anosCount = Math.max(1, Math.min(10, Number(orcRecAnos || 1)));
+
+    const codigo_pais = (orcForm.codigo_pais || "PT") as CountryCode;
+    const categoria_id = String(orcForm.categoria_id || "").trim();
+    const anoBase = Number(orcForm.ano || new Date().getFullYear());
+    const valor_meta = Math.round(Number(orcForm.valor_meta || 0) * 100) / 100;
+
+    const makeDeterministicId = (x: { codigo_pais: CountryCode; ano: number; mes: number; categoria_id: string }) => {
+      const raw = `orc_${String(x.codigo_pais || "PT")}_${Number(x.ano)}_${Number(x.mes)}_${String(x.categoria_id || "")}`;
+      return raw.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 140);
+    };
+
+    if (!categoria_id) {
+      setOrcError("Selecione uma categoria.");
+      return;
+    }
+    if (!Number.isFinite(anoBase) || anoBase < 2000 || anoBase > 2100) {
+      setOrcError("Informe um ano válido.");
+      return;
+    }
+    if (!Number.isFinite(valor_meta)) {
+      setOrcError("Informe um valor válido.");
+      return;
+    }
+
+    (async () => {
+      setOrcError("");
+
+      for (let y = 0; y < anosCount; y++) {
+        const ano = anoBase + y;
+        for (const mes of meses) {
+          const existing = orcamentos.find(
+            (o) =>
+              String((o as any)?.codigo_pais || (o as any)?.countryCode || "PT") === String(codigo_pais) &&
+              Number((o as any)?.ano) === ano &&
+              Number((o as any)?.mes) === mes &&
+              String((o as any)?.categoria_id || "") === categoria_id
+          );
+
+          const payload: Orcamento = {
+            ...(orcForm as any),
+            id: (existing as any)?.id || makeDeterministicId({ codigo_pais, ano, mes, categoria_id }),
+            codigo_pais,
+            categoria_id,
+            ano,
+            mes,
+            valor_meta,
+          } as any;
+
+          await Promise.resolve((onSaveOrcamento as any)(payload));
+        }
+      }
+
+      setOrcOpen(false);
+    })();
   }
 
   // --- UI helpers ---
@@ -691,8 +822,14 @@ const Settings: React.FC<SettingsProps> = ({
       {/* ORÇAMENTO */}
       {tab === "ORCAMENTO" && (
         <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-xl font-black text-bb-blue uppercase italic">Orçamento (metas)</h3>
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="text-xl font-black text-bb-blue uppercase italic">Orçamento (metas)</h3>
+              <p className="text-[11px] text-gray-500 font-semibold">
+                Metas por <b>mês</b> e <b>ano</b>, por categoria.
+              </p>
+            </div>
+
             <button
               type="button"
               onClick={openNewOrcamento}
@@ -702,22 +839,78 @@ const Settings: React.FC<SettingsProps> = ({
             </button>
           </div>
 
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">País</label>
+              <select
+                value={orcFilterPais}
+                onChange={(e) => {
+                  setOrcFilterPais(e.target.value as CountryCode);
+                  setOrcForm((s) => ({ ...(s as any), codigo_pais: e.target.value as any }));
+                }}
+                className="mt-1 p-3 rounded-xl border bg-gray-50 text-[12px]"
+              >
+                <option value="PT">🇵🇹 PT</option>
+                <option value="BR">🇧🇷 BR</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Ano</label>
+              <select
+                value={orcFilterAno}
+                onChange={(e) => {
+                  const y = Number(e.target.value);
+                  setOrcFilterAno(y);
+                  setOrcForm((s) => ({ ...(s as any), ano: y }));
+                }}
+                className="mt-1 p-3 rounded-xl border bg-gray-50 text-[12px]"
+              >
+                {anosDisponiveis.map((y) => (
+                  <option key={y} value={y}>
+                    {y}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Mês</label>
+              <select
+                value={orcFilterMes}
+                onChange={(e) => setOrcFilterMes(Number(e.target.value))}
+                className="mt-1 p-3 rounded-xl border bg-gray-50 text-[12px]"
+              >
+                <option value={0}>Todos</option>
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <option key={i + 1} value={i + 1}>
+                    {String(i + 1).padStart(2, "0")} - {mesesLabel[i]}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
           <div className="overflow-auto">
             <table className="w-full text-left text-[12px]">
               <thead className="text-[10px] uppercase text-gray-500">
                 <tr>
+                  <th className="py-2">Ano</th>
+                  <th className="py-2">Mês</th>
                   <th className="py-2">País</th>
                   <th className="py-2">Categoria</th>
-                  <th className="py-2">Valor</th>
+                  <th className="py-2 text-right">Valor</th>
                   <th className="py-2"></th>
                 </tr>
               </thead>
               <tbody>
-                {orcamentos.map((o) => (
+                {orcamentosFiltrados.map((o: any) => (
                   <tr key={o.id} className="border-t">
-                    <td className="py-3 font-semibold">{o.countryCode}</td>
-                    <td className="py-3">{categoriasById.get(o.categoriaId)?.nome || o.categoriaId}</td>
-                    <td className="py-3">{Number(o.valor).toFixed(2)}</td>
+                    <td className="py-3 font-semibold">{o.ano}</td>
+                    <td className="py-3">{String(o.mes).padStart(2, "0")} - {mesesLabel[(Number(o.mes) || 1) - 1] || "-"}</td>
+                    <td className="py-3">{o.codigo_pais || o.countryCode || "PT"}</td>
+                    <td className="py-3">{categoriasById.get(o.categoria_id)?.nome || o.categoria_id}</td>
+                    <td className="py-3 text-right">{Number(o.valor_meta || 0).toFixed(2)}</td>
                     <td className="py-3 text-right">
                       <button
                         type="button"
@@ -729,9 +922,9 @@ const Settings: React.FC<SettingsProps> = ({
                     </td>
                   </tr>
                 ))}
-                {orcamentos.length === 0 && (
+                {orcamentosFiltrados.length === 0 && (
                   <tr>
-                    <td className="py-6 text-gray-500" colSpan={4}>
+                    <td className="py-6 text-gray-500" colSpan={6}>
                       Nenhuma meta definida.
                     </td>
                   </tr>
@@ -1038,49 +1231,168 @@ const Settings: React.FC<SettingsProps> = ({
 
       {/* MODAL:Orçamento */}
       <Modal open={orcOpen} title="Definir meta (orçamento)" onClose={() => setOrcOpen(false)}>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="text-[10px] font-black uppercase text-gray-500">País</label>
-            <select
-              value={orcForm.countryCode}
-              onChange={(e) => setOrcForm((s) => ({ ...s, countryCode: e.target.value as CountryCode }))}
-              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
-            >
-              <option value="PT">🇵🇹 PT</option>
-              <option value="BR">🇧🇷 BR</option>
-            </select>
+        <div className="space-y-4">
+          {orcError ? (
+            <div className="rounded-2xl border bg-red-50 text-red-700 p-3 text-[11px] font-black">
+              {orcError}
+            </div>
+          ) : null}
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">País</label>
+              <select
+                value={orcForm.codigo_pais}
+                onChange={(e) => setOrcForm((s: any) => ({ ...s, codigo_pais: e.target.value as CountryCode }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              >
+                <option value="PT">🇵🇹 PT</option>
+                <option value="BR">🇧🇷 BR</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Ano (base)</label>
+              <input
+                type="number"
+                value={Number((orcForm as any).ano)}
+                onChange={(e) => setOrcForm((s: any) => ({ ...s, ano: Number(e.target.value) }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="2026"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Mês (base)</label>
+              <select
+                value={Number((orcForm as any).mes)}
+                onChange={(e) => {
+                  const m = Number(e.target.value);
+                  setOrcForm((s: any) => ({ ...s, mes: m }));
+                  // se a recorrência estiver vazia, mantém coerência com o mês base
+                  setOrcRecMeses((prev) => (Array.isArray(prev) && prev.length ? prev : [m]));
+                }}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              >
+                {Array.from({ length: 12 }).map((_, i) => (
+                  <option key={i + 1} value={i + 1}>
+                    {String(i + 1).padStart(2, "0")} - {mesesLabel[i]}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="text-[10px] font-black uppercase text-gray-500">Categoria</label>
+              <select
+                value={String((orcForm as any).categoria_id || "")}
+                onChange={(e) => setOrcForm((s: any) => ({ ...s, categoria_id: e.target.value }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              >
+                {categorias.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.nome}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Valor (meta)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={Number((orcForm as any).valor_meta)}
+                onChange={(e) => setOrcForm((s: any) => ({ ...s, valor_meta: Number(e.target.value) }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="0"
+              />
+            </div>
           </div>
-          <div>
-            <label className="text-[10px] font-black uppercase text-gray-500">Categoria</label>
-            <select
-              value={orcForm.categoriaId}
-              onChange={(e) => setOrcForm((s) => ({ ...s, categoriaId: e.target.value }))}
-              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
-            >
-              {categorias.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.nome}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-[10px] font-black uppercase text-gray-500">Valor</label>
-            <input
-              type="number"
-              value={orcForm.valor}
-              onChange={(e) => setOrcForm((s) => ({ ...s, valor: Number(e.target.value) }))}
-              className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
-              placeholder="0"
-            />
-          </div>
-          <div className="flex items-end justify-end gap-2">
-            <button type="button" onClick={() => setOrcOpen(false)} className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase">
-              Cancelar
-            </button>
-            <button type="button" onClick={saveOrcamento} className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase">
-              Salvar
-            </button>
+
+          <div className="rounded-2xl border bg-gray-50 p-4 space-y-3">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-[10px] font-black uppercase text-gray-600">Recorrência</div>
+                <div className="text-[11px] text-gray-500 font-semibold">
+                  Escolha os meses e por quantos anos gerar metas (a partir do ano base).
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOrcRecMeses(Array.from({ length: 12 }).map((_, i) => i + 1))}
+                  className="px-3 py-2 rounded-xl border bg-white text-[10px] font-black uppercase shadow-sm"
+                >
+                  Todos os meses
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOrcRecMeses([])}
+                  className="px-3 py-2 rounded-xl border bg-white text-[10px] font-black uppercase shadow-sm"
+                >
+                  Limpar
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-6 md:grid-cols-12 gap-2">
+              {Array.from({ length: 12 }).map((_, i) => {
+                const m = i + 1;
+                const active = Array.isArray(orcRecMeses) && orcRecMeses.includes(m);
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() =>
+                      setOrcRecMeses((prev) => {
+                        const p = Array.isArray(prev) ? prev : [];
+                        if (p.includes(m)) return p.filter((x) => x !== m);
+                        return [...p, m];
+                      })
+                    }
+                    className={`px-2 py-2 rounded-xl text-[10px] font-black uppercase border ${
+                      active ? "bg-bb-blue text-white border-bb-blue" : "bg-white text-bb-blue border-gray-200"
+                    }`}
+                    title={mesesLabel[i]}
+                  >
+                    {String(m).padStart(2, "0")}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-[10px] font-black uppercase text-gray-500">Quantidade de anos</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={Number(orcRecAnos)}
+                  onChange={(e) => setOrcRecAnos(Number(e.target.value))}
+                  className="w-full mt-1 p-3 rounded-xl border bg-white"
+                  placeholder="1"
+                />
+                <div className="text-[10px] text-gray-500 font-semibold mt-1">Máx. 10 anos</div>
+              </div>
+              <div className="md:col-span-2 flex items-end justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOrcOpen(false)}
+                  className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={saveOrcamento}
+                  className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase"
+                >
+                  Salvar
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </Modal>
