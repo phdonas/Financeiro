@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 
 import { TipoTransacao } from "../types";
+import { stableReceiptInternalId, txDedupeKey } from "../lib/importDedupe";
 import type {
   CategoriaContabil,
   FormaPagamento,
@@ -16,8 +17,15 @@ interface ImportSectionProps {
   categorias: CategoriaContabil[];
   formasPagamento: FormaPagamento[];
   fornecedores: Fornecedor[];
+  /** Para dedupe (não duplicar no Ledger) */
+  transacoesExistentes?: Transacao[];
+  receiptsExistentes?: Receipt[];
   onSaveTx: (t: Transacao) => void;
   onSaveReceipt: (r: Receipt) => void;
+
+  /** Para dedupe (evitar duplicação em reimport). */
+  existingTransacoes?: Transacao[];
+  existingReceipts?: Receipt[];
 
   /** Sprint 5.3: capturar mappingUsed para persistir no importLog no Sprint 5.5 */
   onMappingUsed?: (m: ImportMappingUsed) => void;
@@ -47,12 +55,14 @@ type ImportValueRemap = {
   suppliers: Record<string, string>;
   categories: Record<string, string>;
   accounts: Record<string, string>;
+  payments: Record<string, string>;
 };
 
 type UnresolvedIssues = {
   suppliers: string[];
   categories: string[];
   accounts: { cat: string; item: string }[];
+  payments: string[];
 };
 
 type MappingField =
@@ -64,11 +74,26 @@ type MappingField =
   | "descricao"
   | "valor"
   | "pago"
+  | "paid_flag"
   | "id"
   | "fornecedor"
   | "base"
-  | "irs_rate"
-  | "iva_rate";
+  | "pay_date"
+  | "irs_amount"
+  | "iva_amount"
+  | "received_amount"
+  | "net_amount";
+
+type RequiredMode = "ANY" | "ALL";
+
+type FieldConfigRow = {
+  field: MappingField;
+  column: string;
+  requiredMin: boolean;
+  requiredImport: boolean;
+  defaultValue: string;
+  fillRule: string;
+};
 
 const DEFAULT_RATES = {
   irs: 11.5,
@@ -98,10 +123,13 @@ function isTruthyPaid(v: any): boolean {
 function parseMoney(v: any): number {
   const s = String(v ?? "").trim();
   if (!s) return 0;
-  // remove espaços e milhares comuns
-  const cleaned = s
+  // remove símbolos e caracteres não numéricos (mantém sinais, vírgula e ponto)
+  const only = s
     .replace(/\s/g, "")
-    .replace(/\.(?=\d{3}(\D|$))/g, "") // remove pontos de milhar
+    .replace(/[^0-9,\.\-]/g, "");
+  // remove pontos de milhar (1.234,56) e normaliza vírgula para ponto
+  const cleaned = only
+    .replace(/\.(?=\d{3}(\D|$))/g, "")
     .replace(",", ".");
   const n = Number.parseFloat(cleaned);
   return Number.isFinite(n) ? n : 0;
@@ -120,13 +148,16 @@ function colLetter(idx: number): string {
 
 function convertToISODate(val: any): string {
   if (!val) return "";
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return val.toISOString().split("T")[0];
+  }
   if (typeof val === "number") {
     // Excel serial date
     const date = new Date(Math.round((val - 25569) * 86400 * 1000));
     return date.toISOString().split("T")[0];
   }
   const s = String(val).trim();
-  const parts = s.split(/[/-]/);
+  const parts = s.split(/[\/\-\.]/);
   if (parts.length === 3) {
     // YYYY-MM-DD
     if (parts[0].length === 4) {
@@ -140,14 +171,29 @@ function convertToISODate(val: any): string {
 
 function requiredFieldsFor(type: ImportTypeLocal): MappingField[] {
   if (type === "RECIBOS") {
-    return ["date", "id", "fornecedor", "categoria", "item", "base", "pago"];
+    // Validação mínima (definida pelo usuário): Número (id) + Data de emissão
+    return ["id", "date"];
   }
-  return ["date", "tipo", "banco", "categoria", "item", "descricao", "valor", "pago"];
+  // Validação mínima (definida pelo usuário): Data + Valor
+  return ["date", "valor"];
 }
 
 function optionalFieldsFor(type: ImportTypeLocal): MappingField[] {
-  if (type === "RECIBOS") return ["descricao", "irs_rate", "iva_rate"];
-  return [];
+  if (type === "RECIBOS") {
+    return [
+      "pay_date",
+      "fornecedor",
+      "descricao",
+      "base",
+      "irs_amount",
+      "iva_amount",
+      "received_amount",
+      "net_amount",
+      "pago",
+      "paid_flag",
+    ];
+  }
+  return ["tipo", "banco", "categoria", "item", "descricao", "pago", "paid_flag"];
 }
 
 function labelForField(f: MappingField): string {
@@ -174,10 +220,18 @@ function labelForField(f: MappingField): string {
       return "Fornecedor";
     case "base":
       return "Valor Base";
-    case "irs_rate":
-      return "IRS % (opcional)";
-    case "iva_rate":
-      return "IVA % (opcional)";
+    case "pay_date":
+      return "Data de Pagamento (opcional)";
+    case "irs_amount":
+      return "IRS (valor)";
+    case "iva_amount":
+      return "IVA (valor)";
+    case "net_amount":
+      return "Valor Líquido";
+    case "received_amount":
+      return "Valor Recebido";
+    case "paid_flag":
+      return "Flag Pago (visual)";
     default:
       return f;
   }
@@ -187,19 +241,23 @@ function synonymMapFor(type: ImportTypeLocal): Record<MappingField, string[]> {
   if (type === "RECIBOS") {
     return {
       date: ["issue_date", "data_emissao", "data emissao", "data", "emissao"],
+      pay_date: ["pay_date", "data_pagamento", "data pagamento", "pagamento", "recebimento"],
       id: ["id", "numero", "número", "recibo", "receipt"],
       fornecedor: ["fornecedor", "supplier", "emitente"],
-      categoria: ["categoria", "categoria_contabil", "categoria contabil"],
-      item: ["conta_contabil", "conta contabil", "conta", "item", "subcategoria"],
       descricao: ["description", "descricao", "descrição", "observacao", "observação"],
       base: ["base_amount", "base", "valor_base", "valor base", "valor"],
-      irs_rate: ["irs_rate", "irs%", "irs_percent", "irs percent"],
-      iva_rate: ["iva_rate", "iva%", "iva_percent", "iva percent"],
+      irs_amount: ["irs", "irs_amount", "valor_irs", "valor irs"],
+      iva_amount: ["iva", "iva_amount", "valor_iva", "valor iva"],
+      received_amount: ["received", "received_amount", "valor_recebido", "valor recebido"],
+      net_amount: ["net", "net_amount", "valor_liquido", "valor liquido", "valor líquido"],
       pago: ["is_paid", "pago", "status", "paid"],
+      paid_flag: ["flag", "flag_pago", "flag pago"],
       // unused in RECIBOS:
       tipo: ["tipo"],
       banco: ["banco"],
       valor: ["valor"],
+      categoria: ["categoria"],
+      item: ["item"],
     };
   }
   // Lançamentos
@@ -216,8 +274,12 @@ function synonymMapFor(type: ImportTypeLocal): Record<MappingField, string[]> {
     id: ["id"],
     fornecedor: ["fornecedor"],
     base: ["base"],
-    irs_rate: ["irs_rate"],
-    iva_rate: ["iva_rate"],
+    pay_date: ["pay_date"],
+    irs_amount: ["irs_amount"],
+    iva_amount: ["iva_amount"],
+    received_amount: ["received_amount"],
+    net_amount: ["net_amount"],
+    paid_flag: ["paid_flag"],
   };
 }
 
@@ -232,20 +294,23 @@ function detectAutoMapping(
       return {
         autoDetected: true,
         columns: {
-          date: "A",
+          // Planilha de Recibos (linha 4+): A não usar; B..O conforme instruções
           id: "B",
-          fornecedor: "C",
-          categoria: "D",
-          item: "E",
-          descricao: "F",
-          base: "G",
-          irs_rate: "H",
-          iva_rate: "I",
-          pago: "J",
+          date: "C",
+          pay_date: "D",
+          base: "E",
+          irs_amount: "F",
+          iva_amount: "G",
+          received_amount: "H",
+          net_amount: "I",
+          fornecedor: "J",
+          descricao: "K",
+          pago: "O",
         },
       };
     }
-    // Lançamentos
+    // Lançamentos (Portugal novo: A..I; export antigo: A..H)
+    const hasI = columns.includes("I");
     return {
       autoDetected: true,
       columns: {
@@ -256,8 +321,8 @@ function detectAutoMapping(
         item: "E",
         descricao: "F",
         valor: "G",
-        pago: "H",
-      },
+        ...(hasI ? { paid_flag: "H", pago: "I" } : { pago: "H" }),
+      } as any,
     };
   }
 
@@ -381,6 +446,8 @@ const ImportSection: React.FC<ImportSectionProps> = ({
   categorias,
   formasPagamento,
   fornecedores,
+  transacoesExistentes,
+  receiptsExistentes,
   onSaveTx,
   onSaveReceipt,
   onMappingUsed,
@@ -399,15 +466,22 @@ const ImportSection: React.FC<ImportSectionProps> = ({
   const [mappingDraft, setMappingDraft] = useState<Record<string, string>>({});
   const [mappingUsedState, setMappingUsedState] = useState<ImportMappingUsed | null>(null);
 
+  // Sprint 5.5+: configuração de mapeamento avançado (por campo)
+  const [fieldConfigs, setFieldConfigs] = useState<FieldConfigRow[]>([]);
+  const [minMode, setMinMode] = useState<RequiredMode>("ANY");
+  const [importMode, setImportMode] = useState<RequiredMode>("ALL");
+
   const [valueRemap, setValueRemap] = useState<ImportValueRemap>({
     suppliers: {},
     categories: {},
     accounts: {},
+    payments: {},
   });
   const [unresolved, setUnresolved] = useState<UnresolvedIssues | null>(null);
   const [needsRebuild, setNeedsRebuild] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const colIndexByIdRef = useRef<Record<string, number>>({});
 
   const requiredFields = useMemo(() => (importType ? requiredFieldsFor(importType) : []), [importType]);
   const optionalFields = useMemo(() => (importType ? optionalFieldsFor(importType) : []), [importType]);
@@ -421,7 +495,11 @@ const ImportSection: React.FC<ImportSectionProps> = ({
     setColIndexById({});
     setMappingDraft({});
     setMappingUsedState(null);
-    setValueRemap({ suppliers: {}, categories: {}, accounts: {} });
+    setFieldConfigs([]);
+    setMinMode('ANY');
+    setImportMode('ALL');
+    colIndexByIdRef.current = {};
+    setValueRemap({ suppliers: {}, categories: {}, accounts: {}, payments: {} });
     setUnresolved(null);
     setNeedsRebuild(false);
     setStructureMode("LETTERS");
@@ -431,100 +509,167 @@ const ImportSection: React.FC<ImportSectionProps> = ({
   function getCell(row: any[], field: MappingField, mappingColumns: Record<string, string>): any {
     const colId = mappingColumns[field];
     if (!colId) return "";
-    const idx = colIndexById[colId];
+    const idx = (colIndexByIdRef.current || {})[colId];
     if (typeof idx !== "number") return "";
     return row[idx];
   }
 
+  
   function parseWithMapping(rows: any[][], mapping: ImportMappingUsed, remap: ImportValueRemap = valueRemap) {
     const mappingCols = mapping.columns as Record<string, string>;
 
     const issueSuppliers = new Set<string>();
     const issueCategories = new Set<string>();
     const issueAccounts = new Map<string, { cat: string; item: string }>();
+    const issuePayments = new Set<string>();
+
+    const isRowBlank = (row: any[]) =>
+      row.every((v) => String(v ?? "").trim() === "");
 
     const dataRows = rows.slice(dataStartIndex);
     const results: ParsedRow[] = dataRows
       .map((row) => {
         if (!Array.isArray(row)) return null;
-
-        const dateVal = getCell(row, "date", mappingCols);
-        if (!dateVal || String(dateVal).trim() === "") return null;
-
+        if (isRowBlank(row)) return null;
         const errors: string[] = [];
-        const isoDate = convertToISODate(dateVal);
-        if (!isoDate) errors.push("Data inválida");
+        const warnings: string[] = [];
+
+        // Regras (por tipo) definidas pelo usuário
+        const cfgByField: Record<string, FieldConfigRow> = Object.fromEntries(
+          (fieldConfigs || []).map((c) => [c.field, c])
+        );
+
+        const getRaw = (f: MappingField) => getCell(row, f, mappingCols);
+        const getEffective = (f: MappingField) => {
+          const raw = getRaw(f);
+          const s = String(raw ?? "").trim();
+          if (s) return raw;
+          const def = cfgByField[f]?.defaultValue ?? "";
+          return def;
+        };
+        const isFilled = (v: any) => String(v ?? "").trim() !== "";
+
+        const minFields = (fieldConfigs || []).filter((c) => c.requiredMin).map((c) => c.field);
+        const importFields = (fieldConfigs || []).filter((c) => c.requiredImport).map((c) => c.field);
+
+        const checkRequired = (fields: MappingField[], mode: RequiredMode) => {
+          if (!fields || fields.length === 0) return { ok: true, missing: [] as MappingField[] };
+          const filled = fields.filter((f) => isFilled(getEffective(f)));
+          if (mode === "ANY") {
+            return { ok: filled.length > 0, missing: filled.length > 0 ? [] : fields };
+          }
+          const missing = fields.filter((f) => !isFilled(getEffective(f)));
+          return { ok: missing.length === 0, missing };
+        };
+
+        // 1) Filtro: só considerar linha se atender o critério mínimo (ou se não houver critério mínimo, se não for totalmente vazia)
+        const minCheck = checkRequired(minFields, minMode);
+        if (!minCheck.ok) {
+          return null;
+        }
+
+        // 2) Validação: linha é importável se atender o critério de importação
+        const importCheck = checkRequired(importFields, importMode);
+        if (!importCheck.ok) {
+          if (importMode === "ANY") errors.push(`Campos obrigatórios ausentes: nenhum entre (${importFields.map(labelForField).join(', ')})`);
+          else errors.push(`Campos obrigatórios ausentes: ${importCheck.missing.map(labelForField).join(', ')}`);
+        }
+
+        // Data (se existir)
+        const dateVal = getEffective("date");
+        const dateStr = String(dateVal ?? "").trim();
+        const isoDate = dateStr ? convertToISODate(dateVal) : "";
+        if (dateStr && !isoDate) errors.push("Data inválida");
 
         if (importType === "RECIBOS") {
-          const rId = String(getCell(row, "id", mappingCols) || "").trim();
-          const supName = String(getCell(row, "fornecedor", mappingCols) || "").trim();
-          const catName = String(getCell(row, "categoria", mappingCols) || "").trim();
-          const itemName = String(getCell(row, "item", mappingCols) || "").trim();
-          const desc = String(getCell(row, "descricao", mappingCols) || "").trim();
+          const rId = String(getEffective("id") || "").trim();
 
-          const baseVal = parseMoney(getCell(row, "base", mappingCols));
-          const irsP = parseMoney(getCell(row, "irs_rate", mappingCols)) || DEFAULT_RATES.irs;
-          const ivaP = parseMoney(getCell(row, "iva_rate", mappingCols)) || DEFAULT_RATES.iva;
+          const supName = String(getEffective("fornecedor") || "").trim();
+          const desc = String(getEffective("descricao") || "").trim();
 
-          if (!rId) errors.push("ID do recibo vazio");
-          if (!supName) errors.push("Fornecedor vazio");
-          if (!catName) errors.push("Categoria vazia");
-          if (!itemName) errors.push("Conta/Item vazio");
-          if (!(baseVal > 0)) errors.push("Valor base inválido");
+          const payDateIso = convertToISODate(getEffective("pay_date"));
+          const baseVal = parseMoney(getEffective("base"));
+          const irsA = parseMoney(getEffective("irs_amount"));
+          const ivaA = parseMoney(getEffective("iva_amount"));
+          const receivedA = parseMoney(getEffective("received_amount"));
+          const netA = parseMoney(getEffective("net_amount"));
 
-          const foundSupByName = fornecedores.find((s) => s.nome.toUpperCase() === supName.toUpperCase());
-          const foundSup =
-            foundSupByName ||
-            (remap.suppliers[normalizeStr(supName)]
-              ? fornecedores.find((s) => s.id === remap.suppliers[normalizeStr(supName)])
-              : undefined);
-          if (!foundSup && supName) issueSuppliers.add(supName);
+          const paidRaw = getEffective("pago");
+          const isPaid = normalizeStr(paidRaw) === "x" || isTruthyPaid(paidRaw);
 
-          const foundCatByName = categorias.find((c) => c.nome.toUpperCase() === catName.toUpperCase());
-          const foundCat =
-            foundCatByName ||
-            (remap.categories[normalizeStr(catName)]
-              ? categorias.find((c) => c.id === remap.categories[normalizeStr(catName)])
-              : undefined);
-          if (!foundCat && catName) issueCategories.add(catName);
+          // Campos opcionais: podem estar vazios. Se houver valor e não mapear, vira WARNING (não bloqueia).
+          let foundSup: Fornecedor | undefined = undefined;
+          if (supName) {
+            const foundSupByName = fornecedores.find((s) => s.nome.toUpperCase() === supName.toUpperCase());
+            foundSup =
+              foundSupByName ||
+              (remap.suppliers[normalizeStr(supName)]
+                ? fornecedores.find((s) => s.id === remap.suppliers[normalizeStr(supName)])
+                : undefined);
 
-          const accountKey = makeAccountKey(catName, itemName);
-          const foundItemByName = foundCat?.contas.find((i) => i.nome.toUpperCase() === itemName.toUpperCase());
-          const foundItem =
-            foundItemByName ||
-            (foundCat && remap.accounts[accountKey]
-              ? foundCat.contas.find((i) => i.id === remap.accounts[accountKey])
-              : undefined);
-          if (foundCat && !foundItem && itemName) issueAccounts.set(accountKey, { cat: catName, item: itemName });
+            if (!foundSup) {
+              issueSuppliers.add(supName);
+              warnings.push(`Fornecedor '${supName}' não mapeado`);
+            }
+          } else {
+            warnings.push("Fornecedor/Empresa vazio");
+          }
 
-          if (!foundSup) errors.push(`Fornecedor '${supName}' não mapeado`);
-          if (!foundCat) errors.push(`Cat '${catName}' não mapeada`);
-          if (foundCat && !foundItem) errors.push(`Conta '${itemName}' não mapeada`);
+          const country = (foundSup?.pais || "PT") as any;
 
-          const isPaid = isTruthyPaid(getCell(row, "pago", mappingCols));
+          // Categoria/Conta derivadas do Fornecedor (se existir)
+          const rawCatName = String(foundSup?.descricao || "").trim();
+          let foundCat: CategoriaContabil | undefined = undefined;
+          let mainConta: any | undefined = undefined;
 
-          const irsA = (baseVal * irsP) / 100;
-          const ivaA = (baseVal * ivaP) / 100;
+          if (rawCatName) {
+            const catKey = normalizeStr(rawCatName);
+            const foundCatByName = categorias.find((c) => c.nome.toUpperCase() === rawCatName.toUpperCase());
+            foundCat =
+              foundCatByName ||
+              (remap.categories[catKey] ? categorias.find((c) => c.id === remap.categories[catKey]) : undefined);
+
+            if (!foundCat) {
+              issueCategories.add(rawCatName);
+              warnings.push(`Cat '${rawCatName}' não mapeada`);
+            } else {
+              mainConta = (foundCat?.contas || []).find((c: any) => (c as any)?.codigo_pais === country) || foundCat?.contas?.[0];
+              if (!mainConta) warnings.push("Categoria sem contas para vincular");
+            }
+          }
+
+          const internalId = stableReceiptInternalId({
+            receiptId: rId || "",
+            issueDateIso: isoDate || "",
+            fornecedorId: foundSup?.id || "",
+            receivedAmount: receivedA,
+          });
+          const txId = `TX_${internalId}`;
+
+          const irsRate = baseVal > 0 ? (irsA / baseVal) * 100 : DEFAULT_RATES.irs;
+          const ivaRate = baseVal > 0 ? (ivaA / baseVal) * 100 : DEFAULT_RATES.iva;
 
           const receipt: Partial<Receipt> = {
-            internal_id: Math.random().toString(36).substr(2, 9),
-            id: rId,
-            issue_date: isoDate,
-            country_code: "PT",
+            internal_id: internalId,
+            transacao_id: txId,
+            id: rId || "",
+            issue_date: isoDate || "",
+            pay_date: payDateIso || undefined,
+            country_code: country,
             fornecedor_id: foundSup?.id || "",
             categoria_id: foundCat?.id || "",
-            conta_contabil_id: foundItem?.id || "",
-            description: desc || itemName || "Recibo importado",
-            base_amount: baseVal,
-            irs_rate: irsP,
-            iva_rate: ivaP,
-            irs_amount: irsA,
-            iva_amount: ivaA,
-            net_amount: baseVal - irsA,
-            received_amount: baseVal - irsA + ivaA,
+            conta_contabil_id: mainConta?.id || "",
+            description: desc || (rId ? `Recibo #${rId}` : "Recibo importado"),
+            base_amount: baseVal || 0,
+            irs_rate: Number.isFinite(irsRate) ? Math.round(irsRate * 100) / 100 : undefined,
+            iva_rate: Number.isFinite(ivaRate) ? Math.round(ivaRate * 100) / 100 : undefined,
+            irs_amount: irsA || 0,
+            iva_amount: ivaA || 0,
+            net_amount: netA || 0,
+            received_amount: receivedA || 0,
             is_paid: isPaid,
             forma_pagamento_id: "",
-            flag_calcula_premiacao: false,
+            flag_calcula_premiacao: Boolean(foundSup?.flag_calcula_premiacao),
             workspace_id: "fam_01",
           };
 
@@ -533,63 +678,119 @@ const ImportSection: React.FC<ImportSectionProps> = ({
             data: receipt,
             isValid: errors.length === 0,
             errors,
+            warnings: warnings.length ? warnings : undefined,
             displayInfo: {
-              data: isoDate,
-              identificador: `REC #${rId}`,
-              categoria: foundCat?.nome || catName,
+              data: isoDate || "",
+              identificador: rId ? `REC #${rId}` : "REC",
+              categoria: foundCat?.nome || rawCatName,
               valor: receipt.received_amount || 0,
               detalhe: supName,
-            },
+              paidVisual: isPaid,
+            } as any,
           };
         }
 
-        // Lançamentos
+        // Lançamentos (PT/BR)
         const country = importType === "LANCAMENTOS_BR" ? "BR" : "PT";
-        const tipoStr = String(getCell(row, "tipo", mappingCols) || "").toUpperCase();
-        const banco = String(getCell(row, "banco", mappingCols) || "").trim();
-        const catName = String(getCell(row, "categoria", mappingCols) || "").trim();
-        const itemName = String(getCell(row, "item", mappingCols) || "").trim();
-        const desc = String(getCell(row, "descricao", mappingCols) || "").trim();
-        const val = parseMoney(getCell(row, "valor", mappingCols));
+        const tipoStr = String(getEffective("tipo") || "").toUpperCase();
+        const banco = String(getEffective("banco") || "").trim();
+        const catName = String(getEffective("categoria") || "").trim();
+        const itemName = String(getEffective("item") || "").trim();
+        const desc = String(getEffective("descricao") || "").trim();
 
-        if (!banco) errors.push("Banco/forma pagamento vazio");
-        if (!catName) errors.push("Categoria vazia");
-        if (!itemName) errors.push("Conta/Item vazio");
-        if (!(val !== 0)) errors.push("Valor inválido");
+        const rawValor = getEffective("valor");
+        const rawValorStr = String(rawValor ?? "").trim();
+        const val = parseMoney(rawValor);
 
-        const warnings: string[] = [];
-        const foundFP = formasPagamento.find((f) => f.nome.toUpperCase() === banco.toUpperCase());
+        // Valor (se presente)
+        if (rawValorStr) {
+          if (val === 0 && normalizeStr(rawValorStr) !== "0" && normalizeStr(rawValorStr) !== "0,00" && normalizeStr(rawValorStr) !== "0.00") {
+            warnings.push("Valor não reconhecido: importado como 0");
+          }
+        }
 
-        const foundCatByName = categorias.find((c) => c.nome.toUpperCase() === catName.toUpperCase());
-        const foundCat =
-          foundCatByName ||
-          (remap.categories[normalizeStr(catName)]
-            ? categorias.find((c) => c.id === remap.categories[normalizeStr(catName)])
-            : undefined);
-        if (!foundCat && catName) issueCategories.add(catName);
+        // Campos opcionais: se houver valor e não mapear, vira WARNING (não bloqueia).
+        let foundFP: FormaPagamento | undefined = undefined;
+        if (banco) {
+          const fpKey = normalizeStr(banco);
+          const foundFPByName = formasPagamento.find((f) => f.nome.toUpperCase() === banco.toUpperCase());
+          foundFP =
+            foundFPByName ||
+            (remap.payments[fpKey] ? formasPagamento.find((f) => f.id === remap.payments[fpKey]) : undefined);
 
-        const accountKey = makeAccountKey(catName, itemName);
-        const foundItemByName = foundCat?.contas.find((i) => i.nome.toUpperCase() === itemName.toUpperCase());
-        const foundItem =
-          foundItemByName ||
-          (foundCat && remap.accounts[accountKey]
-            ? foundCat.contas.find((i) => i.id === remap.accounts[accountKey])
-            : undefined);
-        if (foundCat && !foundItem && itemName) issueAccounts.set(accountKey, { cat: catName, item: itemName });
+          if (!foundFP) {
+            issuePayments.add(banco);
+            warnings.push(`Forma de pagamento '${banco}' não cadastrada`);
+          }
+        }
 
-        if (!foundCat) errors.push(`Cat '${catName}' não mapeada`);
-        if (foundCat && !foundItem) errors.push(`Conta '${itemName}' não mapeada`);
+        let foundCat: CategoriaContabil | undefined = undefined;
+        if (catName) {
+          const foundCatByName = categorias.find((c) => c.nome.toUpperCase() === catName.toUpperCase());
+          foundCat =
+            foundCatByName ||
+            (remap.categories[normalizeStr(catName)]
+              ? categorias.find((c) => c.id === remap.categories[normalizeStr(catName)])
+              : undefined);
 
-        const isPaid = isTruthyPaid(getCell(row, "pago", mappingCols));
+          if (!foundCat) {
+            issueCategories.add(catName);
+            warnings.push(`Cat '${catName}' não mapeada`);
+          }
+        }
+
+        let foundItem: any | undefined = undefined;
+        if (foundCat && itemName) {
+          const accountKey = makeAccountKey(catName, itemName);
+          const foundItemByName = foundCat?.contas.find((i: any) => i.nome.toUpperCase() === itemName.toUpperCase());
+          foundItem =
+            foundItemByName ||
+            (remap.accounts[accountKey] ? foundCat.contas.find((i: any) => i.id === remap.accounts[accountKey]) : undefined);
+
+          if (!foundItem) {
+            issueAccounts.set(accountKey, { cat: catName, item: itemName });
+            warnings.push(`Conta '${itemName}' não mapeada`);
+          }
+        }
+
+        const isPaid = isTruthyPaid(getEffective("pago"));
+        const paidFlag = isTruthyPaid(getEffective("paid_flag"));
         const status: StatusTransacao = isPaid ? "PAGO" : "PENDENTE";
-        const tipo = tipoStr.includes("RECEITA") ? (TipoTransacao as any).RECEITA : (TipoTransacao as any).DESPESA;
+
+        const tipoParsed = (() => {
+          const t = normalizeStr(tipoStr);
+          if (t.includes("receita")) return TipoTransacao.RECEITA;
+          if (t.includes("transfer")) return TipoTransacao.TRANSFERENCIA;
+          if (t.includes("pagamento") && t.includes("fatura")) return TipoTransacao.PAGAMENTO_FATURA;
+          if (t.includes("pagamento_fatura")) return TipoTransacao.PAGAMENTO_FATURA;
+          return TipoTransacao.DESPESA;
+        })();
+
+        const tipo = (() => {
+          const it = normalizeStr(itemName);
+          if (it === "cartao de credito" || (it.includes("cartao") && it.includes("credito"))) {
+            return TipoTransacao.PAGAMENTO_FATURA;
+          }
+          return tipoParsed;
+        })();
+
+        const txHash = txDedupeKey({
+          country,
+          dateIso: isoDate || "",
+          valor: val,
+          categoriaId: catName,
+          contaId: itemName,
+          formaId: banco,
+          description: desc || itemName || "",
+        }).split("|")[1];
+        const txId = `IMPT_${txHash}`;
 
         const tx: Partial<Transacao> = {
-          id: Math.random().toString(36).substr(2, 9),
+          id: txId,
           codigo_pais: country,
           tipo,
-          data_competencia: isoDate,
-          data_prevista_pagamento: isoDate,
+          data_competencia: isoDate || "",
+          data_prevista_pagamento: isoDate || "",
           description: desc || itemName || "Importada",
           valor: val,
           status,
@@ -607,11 +808,12 @@ const ImportSection: React.FC<ImportSectionProps> = ({
           errors,
           warnings: warnings.length ? warnings : undefined,
           displayInfo: {
-            data: isoDate,
+            data: isoDate || "",
             identificador: tx.description || "",
             categoria: foundCat?.nome || catName,
             valor: val,
             detalhe: banco,
+            paidVisual: paidFlag,
           },
         };
       })
@@ -621,12 +823,14 @@ const ImportSection: React.FC<ImportSectionProps> = ({
       suppliers: Array.from(issueSuppliers).sort(),
       categories: Array.from(issueCategories).sort(),
       accounts: Array.from(issueAccounts.values()).sort((a, b) => (a.cat + a.item).localeCompare(b.cat + b.item)),
+      payments: Array.from(issuePayments).sort(),
     });
     setNeedsRebuild(false);
 
     setImportResults(results);
     setCurrentStep("REVIEW");
   }
+
 
   function handleSelectType(t: ImportTypeLocal) {
     setImportType(t);
@@ -637,7 +841,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
     setColIndexById({});
     setMappingDraft({});
     setMappingUsedState(null);
-    setValueRemap({ suppliers: {}, categories: {}, accounts: {} });
+    setValueRemap({ suppliers: {}, categories: {}, accounts: {}, payments: {} });
     setUnresolved(null);
     setNeedsRebuild(false);
   }
@@ -657,47 +861,155 @@ const ImportSection: React.FC<ImportSectionProps> = ({
 
       try {
         const workbook = XLSX.read(data, { type: "array" });
-        const sheet = workbook.Sheets[workbook.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: "" }) as any[][];
+
+        const normName = (s: string) =>
+          String(s || "")
+            .toLowerCase()
+            .normalize("NFD")
+            .replace(/[\u0300-\u036f]/g, "");
+
+        const pickSheetName = () => {
+          if (importType === "RECIBOS") {
+            return (
+              workbook.SheetNames.find((n) => normName(n).includes("recibo")) ||
+              workbook.SheetNames[0]
+            );
+          }
+          if (importType === "LANCAMENTOS_PT") {
+            return (
+              workbook.SheetNames.find((n) => normName(n).includes("lanc")) ||
+              workbook.SheetNames[0]
+            );
+          }
+          return workbook.SheetNames[0];
+        };
+
+        const sheetName = pickSheetName();
+        const sheet = workbook.Sheets[sheetName];
+        const rows = (() => {
+          const ref = (sheet as any)["!ref"];
+          if (!ref) return [] as any[][];
+          const range = XLSX.utils.decode_range(ref);
+          const out: any[][] = [];
+          const maxCols = Math.min(30, range.e.c - range.s.c + 1);
+          for (let R = range.s.r; R <= range.e.r; R++) {
+            const row: any[] = [];
+            for (let C = range.s.c; C <= range.e.c && C < range.s.c + maxCols; C++) {
+              const addr = XLSX.utils.encode_cell({ r: R, c: C });
+              const cell: any = (sheet as any)[addr];
+              let v: any = "";
+              if (cell) {
+                if (cell.v instanceof Date) v = cell.v;
+                else if (typeof cell.v === "number") v = cell.v;
+                else v = cell.w ?? cell.v ?? "";
+              }
+              row.push(v ?? "");
+            }
+            out.push(row);
+          }
+          return out;
+        })() as any[][];
         setRawRows(rows);
 
-        const structure = buildStructureFromRows(rows);
+        // Força mapeamento direto para Portugal (linha 3 = cabeçalho, dados na linha 4)
+        const forcedDirect = (() => {
+          if (importType === "LANCAMENTOS_PT") {
+            const h = (rows?.[2] || []).map((x) => normalizeStr(x));
+            const ok =
+              h[1] === "tipotransacao" &&
+              h[2] === "formapagamento" &&
+              h[3] === "categoriacontabil" &&
+              h[4] === "contaitem" &&
+              h[5].includes("descricao") &&
+              h[6] === "valor" &&
+              h[7].includes("flag") &&
+              h[8] === "status";
+            if (ok) {
+              const cols = ["A", "B", "C", "D", "E", "F", "G", "H", "I"];
+              const idx: Record<string, number> = {};
+              cols.forEach((c, i) => (idx[c] = i));
+              return {
+                mode: "LETTERS" as ColumnMode,
+                headerRowIndex: 2,
+                dataStartIndex: 3,
+                columns: cols,
+                colIndexById: idx,
+              };
+            }
+          }
+          if (importType === "RECIBOS") {
+            // Recibos (layout do usuário): cabeçalho na linha 1 e repetido na linha 2; dados a partir da linha 3.
+            const cols = Array.from({ length: 15 }, (_, i) => colLetter(i)); // A..O
+            const idx: Record<string, number> = {};
+            cols.forEach((c, i) => (idx[c] = i));
+
+            const h0 = (rows?.[0] || []).map((x) => normalizeStr(x));
+            const h1 = (rows?.[1] || []).map((x) => normalizeStr(x));
+            const headerRepeated = h0.length > 3 && h1.length > 3 && h0[1] === "numero" && h1[1] === "numero";
+            const start = headerRepeated ? 2 : 1; // index 2 = linha 3 (dados)
+
+            return {
+              mode: "LETTERS" as ColumnMode,
+              headerRowIndex: 0,
+              dataStartIndex: start,
+              columns: cols,
+              colIndexById: idx,
+            };
+          }
+          return null;
+        })();
+
+        const structure = forcedDirect || buildStructureFromRows(rows);
         setStructureMode(structure.mode);
         setDataStartIndex(structure.dataStartIndex);
         setAvailableColumns(structure.columns);
+        colIndexByIdRef.current = structure.colIndexById;
         setColIndexById(structure.colIndexById);
 
-        // Auto-detect mapping
-        const auto = detectAutoMapping(importType, structure.mode, structure.columns);
-        if (auto) {
-          setMappingUsedState(auto);
-          onMappingUsed?.(auto);
-          parseWithMapping(rows, auto, valueRemap);
-          return;
+        // Sprint 5.5+: sempre abrir tela de regras/mapeamento (mais robusto do que inferência automática)
+        const suggested = detectAutoMapping(importType, structure.mode, structure.columns);
+
+        // Campos (modelo do banco)
+        const allFields: MappingField[] = Array.from(new Set([...requiredFieldsFor(importType), ...optionalFieldsFor(importType)]));
+
+        const suggestedCols = (suggested?.columns || {}) as Record<string, string>;
+        const initialConfigs: FieldConfigRow[] = allFields.map((field) => {
+          const presetCol = suggestedCols[field] || "";
+          const isReqMin = requiredFieldsFor(importType).includes(field);
+          // defaults por tipo
+          let reqMin = isReqMin;
+          let reqImport = isReqMin;
+          if (importType === "RECIBOS") {
+            // linha considerada se tiver ID ou Data; importável se tiver ao menos 1 dos dois (modo ANY por padrão)
+            reqMin = field === "id" || field === "date";
+            reqImport = field === "id" || field === "date";
+          } else {
+            // lançamentos: linha considerada se tiver Data ou Valor; importável requer Data e Valor (modo ALL por padrão)
+            reqMin = field === "date" || field === "valor";
+            reqImport = field === "date" || field === "valor";
+          }
+
+          return {
+            field,
+            column: presetCol,
+            requiredMin: reqMin,
+            requiredImport: reqImport,
+            defaultValue: "",
+            fillRule: "",
+          };
+        });
+
+        // Modos padrão
+        if (importType === "RECIBOS") {
+          setMinMode("ANY");
+          setImportMode("ANY");
+        } else {
+          setMinMode("ANY");
+          setImportMode("ALL");
         }
 
-        // Se não conseguiu auto-mapear, vai para modo de mapeamento (De-Para)
-        const required = requiredFieldsFor(importType);
-        const syn = synonymMapFor(importType);
-
-        const draft: Record<string, string> = {};
-        // tentativa de pré-preenchimento (match parcial)
-        const colsNorm = structure.columns.map((c) => normalizeStr(c));
-        required.forEach((field) => {
-          const candidates = (syn[field] || []).map(normalizeStr).filter(Boolean);
-          if (candidates.length === 0) return;
-          const idx = colsNorm.findIndex((h) => candidates.some((c) => h.includes(c)));
-          if (idx >= 0) draft[field] = structure.columns[idx];
-        });
-
-        optionalFieldsFor(importType).forEach((field) => {
-          const candidates = (syn[field] || []).map(normalizeStr).filter(Boolean);
-          if (candidates.length === 0) return;
-          const idx = colsNorm.findIndex((h) => candidates.some((c) => h.includes(c)));
-          if (idx >= 0) draft[field] = structure.columns[idx];
-        });
-
-        setMappingDraft(draft);
+        setFieldConfigs(initialConfigs);
+        setMappingDraft({ ...suggestedCols });
         setCurrentStep("MAPPING");
       } catch (err: any) {
         console.error(err);
@@ -710,9 +1022,13 @@ const ImportSection: React.FC<ImportSectionProps> = ({
 
   function mappingIsValid(): boolean {
     if (!importType) return false;
-    const required = requiredFieldsFor(importType);
-    // todos os obrigatórios selecionados e não duplicados
-    const selected = required.map((f) => mappingDraft[f]).filter(Boolean);
+    // Regras: campos marcados como Obrigatório (Importar) precisam estar mapeados e sem duplicar colunas.
+    const required = fieldConfigs.filter((c) => c.requiredImport).map((c) => c.field);
+    if (required.length === 0) return true;
+    const selected = fieldConfigs
+      .filter((c) => c.requiredImport)
+      .map((c) => (c.column || '').trim())
+      .filter(Boolean);
     if (selected.length !== required.length) return false;
     const unique = new Set(selected);
     if (unique.size !== selected.length) return false;
@@ -721,13 +1037,20 @@ const ImportSection: React.FC<ImportSectionProps> = ({
 
   function handleConfirmMapping() {
     if (!importType || !rawRows) return;
-    if (!mappingIsValid()) return alert("Mapeie todos os campos obrigatórios (sem duplicar colunas).");
+    if (!mappingIsValid()) return alert("Mapeie todos os campos obrigatórios (Importar) sem duplicar colunas.");
+
+    const columns: Record<string, string> = {};
+    fieldConfigs.forEach((c) => {
+      const col = (c.column || "").trim();
+      if (col) columns[c.field] = col;
+    });
 
     const mapping: ImportMappingUsed = {
       autoDetected: false,
-      columns: { ...mappingDraft },
+      columns,
     };
 
+    setMappingDraft(columns);
     setMappingUsedState(mapping);
     onMappingUsed?.(mapping);
 
@@ -745,46 +1068,43 @@ const ImportSection: React.FC<ImportSectionProps> = ({
       return alert("Você alterou o remapeamento. Clique em 'Atualizar preview' antes de sincronizar.");
     }
 
-    const criticalPending =
-      (unresolved?.categories?.length || 0) > 0 ||
-      (unresolved?.accounts?.length || 0) > 0 ||
-      (importType === "RECIBOS" && (unresolved?.suppliers?.length || 0) > 0);
-
-    if (criticalPending) {
-      return alert("Existem pendências de remapeamento. Resolva-as e atualize o preview antes de sincronizar.");
-    }
-
     const validOnes = importResults.filter((r) => r.isValid);
     if (validOnes.length === 0) return alert("Dados inválidos.");
 
+    const seen = new Set<string>();
+    const existingTx = new Set((transacoesExistentes || []).map((t) => t.id));
+    const existingRc = new Set(
+      (receiptsExistentes || []).map((r: any) => String(r?.internal_id || ""))
+    );
+
+    let synced = 0;
     validOnes.forEach((res) => {
+      if (seen.has(res.id)) return;
+      seen.add(res.id);
+
       if (importType === "RECIBOS") {
         const r = res.data as Receipt;
+        // evita duplicação por id interno (upsert) — mantém regra: Recibo gera Lançamento vinculado no App.tsx
+        if (r?.internal_id && existingRc.has(String((r as any).internal_id))) {
+          onSaveReceipt(r);
+          synced++;
+          return;
+        }
         onSaveReceipt(r);
-        // mantém a regra existente: recibo cria uma transação de receita vinculada
-        onSaveTx({
-          id: `TX_${r.internal_id}`,
-          workspace_id: "fam_01",
-          codigo_pais: r.country_code,
-          categoria_id: r.categoria_id,
-          conta_contabil_id: r.conta_contabil_id,
-          forma_pagamento_id: (r as any).forma_pagamento_id,
-          tipo: (TipoTransacao as any).RECEITA,
-          data_competencia: r.issue_date,
-          data_prevista_pagamento: r.issue_date,
-          description: `${r.description} (#${r.id})`,
-          valor: r.received_amount,
-          status: r.is_paid ? "PAGO" : "PENDENTE",
-          origem: "IMPORTACAO",
-          receipt_id: r.internal_id,
-        } as any);
+        synced++;
       } else {
         const t = res.data as Transacao;
+        if (t?.id && existingTx.has(String(t.id))) {
+          onSaveTx(t);
+          synced++;
+          return;
+        }
         onSaveTx(t);
+        synced++;
       }
     });
 
-    alert(`Sincronizado: ${validOnes.length} registros.`);
+    alert(`Sincronizado: ${synced} registros.`);
     resetAll();
   }
 
@@ -806,16 +1126,19 @@ const ImportSection: React.FC<ImportSectionProps> = ({
     return { total, valid, invalid, withWarnings, totalValue };
   }, [importResults]);
 
-  const criticalPending =
-    (unresolved?.categories?.length || 0) > 0 ||
-    (unresolved?.accounts?.length || 0) > 0 ||
-    (importType === "RECIBOS" && (unresolved?.suppliers?.length || 0) > 0);
+  const criticalPending = false;
 
   const title = useMemo(() => {
     if (importType === "RECIBOS") return "Recibos";
     if (importType === "LANCAMENTOS_BR") return "Lançamentos BR";
     if (importType === "LANCAMENTOS_PT") return "Lançamentos PT";
     return "Importação";
+  }, [importType]);
+
+  const currencyPrefix = useMemo(() => {
+    if (importType === "LANCAMENTOS_BR") return "R$";
+    // Recibos e Lançamentos PT
+    return "€";
   }, [importType]);
 
   return (
@@ -935,68 +1258,125 @@ const ImportSection: React.FC<ImportSectionProps> = ({
         <div className="space-y-6">
           <div className="rounded-2xl border border-amber-200 bg-amber-50/40 p-6">
             <div className="text-[12px] text-amber-800 font-black uppercase italic tracking-widest">
-              Mapeamento (De-Para)
+              Regras + Mapeamento de Importação
             </div>
             <div className="text-[11px] text-amber-900 font-bold mt-2">
-              Não foi possível reconhecer o layout automaticamente. Selecione quais colunas do arquivo representam os campos obrigatórios.
+              Aqui você define exatamente em qual coluna está cada campo do banco. O app usa essas regras para ler, validar e importar.
             </div>
             <div className="text-[11px] text-amber-900 font-bold mt-1">
-              Regra: campos obrigatórios precisam estar todos preenchidos e sem duplicar a mesma coluna.
+              Nível 1 (Prévia) define quais linhas são consideradas registros. Nível 2 (Importar) define quais linhas são válidas para gravação.
             </div>
           </div>
 
           <div className="rounded-2xl border border-gray-200 p-6 bg-white space-y-4">
-            <div className="text-[12px] text-gray-500 font-bold uppercase italic tracking-widest">
-              Campos obrigatórios
+            <div className="flex flex-col md:flex-row md:items-end gap-4">
+              <div className="flex-1">
+                <div className="text-[12px] text-gray-500 font-bold uppercase italic tracking-widest">Obrigatório Nível 1 (Prévia)</div>
+                <div className="text-[11px] text-gray-500 font-bold mt-1">Modo</div>
+                <select
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white"
+                  value={minMode}
+                  onChange={(e) => setMinMode(e.target.value as any)}
+                >
+                  <option value="ANY">ANY (basta 1 preenchido)</option>
+                  <option value="ALL">ALL (todos preenchidos)</option>
+                </select>
+              </div>
+
+              <div className="flex-1">
+                <div className="text-[12px] text-gray-500 font-bold uppercase italic tracking-widest">Obrigatório Nível 2 (Importar)</div>
+                <div className="text-[11px] text-gray-500 font-bold mt-1">Modo</div>
+                <select
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white"
+                  value={importMode}
+                  onChange={(e) => setImportMode(e.target.value as any)}
+                >
+                  <option value="ANY">ANY (basta 1 preenchido)</option>
+                  <option value="ALL">ALL (todos preenchidos)</option>
+                </select>
+              </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {requiredFields.map((f) => (
-                <label key={f} className="space-y-1">
-                  <div className="text-[11px] font-black text-bb-blue italic uppercase">{labelForField(f)}</div>
-                  <select
-                    className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white"
-                    value={mappingDraft[f] || ""}
-                    onChange={(e) => setMappingDraft((prev) => ({ ...prev, [f]: e.target.value }))}
-                  >
-                    <option value="">Selecione...</option>
-                    {availableColumns.map((c) => (
-                      <option key={c} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-            </div>
-
-            {optionalFields.length > 0 && (
-              <>
-                <div className="pt-2 text-[12px] text-gray-500 font-bold uppercase italic tracking-widest">
-                  Campos opcionais
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {optionalFields.map((f) => (
-                    <label key={f} className="space-y-1">
-                      <div className="text-[11px] font-black text-bb-blue italic uppercase">{labelForField(f)}</div>
-                      <select
-                        className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white"
-                        value={mappingDraft[f] || ""}
-                        onChange={(e) => setMappingDraft((prev) => ({ ...prev, [f]: e.target.value }))}
-                      >
-                        <option value="">(Opcional)</option>
-                        {availableColumns.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+            <div className="overflow-auto rounded-2xl border border-gray-100">
+              <table className="min-w-[980px] w-full text-[12px]">
+                <thead className="bg-gray-50">
+                  <tr className="text-left">
+                    <th className="px-4 py-3 font-black uppercase italic text-gray-500">Campo do banco</th>
+                    <th className="px-4 py-3 font-black uppercase italic text-gray-500">Coluna</th>
+                    <th className="px-4 py-3 font-black uppercase italic text-gray-500">Obrig. N1</th>
+                    <th className="px-4 py-3 font-black uppercase italic text-gray-500">Obrig. N2</th>
+                    <th className="px-4 py-3 font-black uppercase italic text-gray-500">Default</th>
+                    <th className="px-4 py-3 font-black uppercase italic text-gray-500">Regra de preenchimento</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fieldConfigs.map((row, idx) => (
+                    <tr key={row.field} className={idx % 2 === 0 ? "bg-white" : "bg-gray-50/40"}>
+                      <td className="px-4 py-3 font-black text-bb-blue italic uppercase">{labelForField(row.field)}</td>
+                      <td className="px-4 py-3">
+                        <select
+                          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white"
+                          value={row.column}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setFieldConfigs((prev) => prev.map((r, i) => (i === idx ? { ...r, column: v } : r)));
+                          }}
+                        >
+                          <option value="">(não mapear)</option>
+                          {availableColumns.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={row.requiredMin}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setFieldConfigs((prev) => prev.map((r, i) => (i === idx ? { ...r, requiredMin: checked } : r)));
+                          }}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={row.requiredImport}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setFieldConfigs((prev) => prev.map((r, i) => (i === idx ? { ...r, requiredImport: checked } : r)));
+                          }}
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold"
+                          value={row.defaultValue}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setFieldConfigs((prev) => prev.map((r, i) => (i === idx ? { ...r, defaultValue: v } : r)));
+                          }}
+                          placeholder='""'
+                        />
+                      </td>
+                      <td className="px-4 py-3">
+                        <input
+                          className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold"
+                          value={row.fillRule}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setFieldConfigs((prev) => prev.map((r, i) => (i === idx ? { ...r, fillRule: v } : r)));
+                          }}
+                          placeholder="ex.: buscar relação no cadastro de fornecedores"
+                        />
+                      </td>
+                    </tr>
                   ))}
-                </div>
-              </>
-            )}
+                </tbody>
+              </table>
+            </div>
 
             <div className="flex flex-wrap gap-3 pt-4">
               <button
@@ -1013,7 +1393,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
                 disabled={!mappingIsValid()}
                 className="px-5 py-3 rounded-2xl bg-bb-blue text-white text-[11px] font-black uppercase italic shadow hover:scale-105 active:scale-95 transition-all disabled:opacity-40 disabled:hover:scale-100"
               >
-                Continuar para preview
+                Atualizar preview
               </button>
             </div>
           </div>
@@ -1033,7 +1413,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
                   {title}
                 </div>
                 <div className="text-[11px] text-gray-500 font-bold mt-1">
-                  Registros válidos serão gravados localmente. (Logs e dedupe serão implementados no Sprint 5.5)
+                  Registros válidos serão gravados localmente.
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-2 text-[10px] font-black uppercase italic">
@@ -1042,7 +1422,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
                   <span className="px-3 py-1 rounded-full bg-amber-50 text-amber-700">Alertas: {previewSummary.withWarnings}</span>
                   <span className="px-3 py-1 rounded-full bg-red-50 text-red-700">Erros: {previewSummary.invalid}</span>
                   <span className="px-3 py-1 rounded-full bg-bb-blue/10 text-bb-blue">
-                    Total válido: {previewSummary.totalValue.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    Total válido: {currencyPrefix} {previewSummary.totalValue.toLocaleString("pt-PT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </span>
                 </div>
               </div>
@@ -1070,6 +1450,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
           {(unresolved &&
             ((unresolved.categories?.length || 0) > 0 ||
               (unresolved.accounts?.length || 0) > 0 ||
+              (unresolved.payments?.length || 0) > 0 ||
               (unresolved.suppliers?.length || 0) > 0)) && (
             <div className="rounded-2xl border border-gray-200 p-6 bg-white">
               <div className="flex flex-wrap items-end justify-between gap-4">
@@ -1092,7 +1473,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      setValueRemap({ suppliers: {}, categories: {}, accounts: {} });
+                      setValueRemap({ suppliers: {}, categories: {}, accounts: {}, payments: {} });
                       setNeedsRebuild(true);
                     }}
                     className="px-4 py-2 rounded-2xl border border-gray-200 bg-white text-[11px] font-black uppercase italic hover:scale-105 active:scale-95 transition-all"
@@ -1111,6 +1492,45 @@ const ImportSection: React.FC<ImportSectionProps> = ({
               </div>
 
               <div className="mt-6 space-y-6">
+                {(unresolved.payments?.length || 0) > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-[11px] font-black uppercase italic text-bb-blue">Formas de pagamento não mapeadas</div>
+                    <div className="space-y-2">
+                      {unresolved.payments.map((rawFP) => {
+                        const k = normalizeStr(rawFP);
+                        return (
+                          <div key={k} className="grid grid-cols-1 md:grid-cols-3 gap-2 items-center">
+                            <div className="text-[11px] font-bold text-gray-700 md:col-span-1 break-words">
+                              {rawFP}
+                            </div>
+                            <div className="md:col-span-2">
+                              <select
+                                className="w-full border border-gray-200 rounded-xl px-3 py-2 text-[12px] font-bold bg-white"
+                                value={valueRemap.payments[k] || ""}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setValueRemap((prev) => ({
+                                    ...prev,
+                                    payments: { ...prev.payments, [k]: v },
+                                  }));
+                                  setNeedsRebuild(true);
+                                }}
+                              >
+                                <option value="">(Selecione a forma de pagamento destino)</option>
+                                {formasPagamento.map((f) => (
+                                  <option key={f.id} value={f.id}>
+                                    {f.nome}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 {(unresolved.categories?.length || 0) > 0 && (
                   <div className="space-y-2">
                     <div className="text-[11px] font-black uppercase italic text-bb-blue">Categorias não mapeadas</div>
@@ -1264,7 +1684,17 @@ const ImportSection: React.FC<ImportSectionProps> = ({
                   <tr key={res.id} className="hover:bg-gray-50/40">
                     <td className="px-4 py-3">
                       {res.isValid ? (
-                        <span className="text-emerald-600 font-black italic uppercase text-[9px]">OK</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-emerald-600 font-black italic uppercase text-[9px]">OK</span>
+                          {typeof (res as any).displayInfo?.paidVisual === "boolean" && (
+                            <span
+                              title={(res as any).displayInfo.paidVisual ? "Pago" : "Não pago"}
+                              className={(res as any).displayInfo.paidVisual ? "text-emerald-600" : "text-gray-400"}
+                            >
+                              ●
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-red-500 font-black italic uppercase text-[9px]">ERRO</span>
                       )}
@@ -1291,7 +1721,7 @@ const ImportSection: React.FC<ImportSectionProps> = ({
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right font-black text-bb-blue text-[11px] italic">
-                      {Number(res.displayInfo.valor || 0).toLocaleString("pt-PT", { minimumFractionDigits: 2 })}
+                      {currencyPrefix} {Number(res.displayInfo.valor || 0).toLocaleString("pt-PT", { minimumFractionDigits: 2 })}
                     </td>
                   </tr>
                 ))}
