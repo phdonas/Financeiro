@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 
 import ImportSection from "./ImportSection";
+import ImportInssSection from "./ImportInssSection";
 
 import type {
   CategoriaContabil,
@@ -37,6 +38,7 @@ type ImportExportProps = {
   inssConfigs: InssYearlyConfig[];
   onSaveTx: (t: Transacao) => void;
   onSaveReceipt: (r: Receipt) => void;
+  onImportInssRecords: (records: InssRecord[]) => void | Promise<void>;
 };
 
 function pad2(n: number) {
@@ -82,6 +84,7 @@ export default function ImportExport(props: ImportExportProps) {
     inssConfigs,
     onSaveTx,
     onSaveReceipt,
+    onImportInssRecords,
   } = props;
 
   const [tab, setTab] = useState<ImportExportTab>("import");
@@ -355,14 +358,22 @@ export default function ImportExport(props: ImportExportProps) {
 
       {/* Conteúdo */}
       {tab === "import" && (
-        <ImportSection
-          categorias={categorias}
-          formasPagamento={formasPagamento}
-          fornecedores={fornecedores}
-          onSaveTx={onSaveTx}
-          onSaveReceipt={onSaveReceipt}
-          onMappingUsed={(m) => setLastMappingUsed(m)}
-        />
+        <div className="space-y-4">
+          <ImportSection
+            categorias={categorias}
+            formasPagamento={formasPagamento}
+            fornecedores={fornecedores}
+            onSaveTx={onSaveTx}
+            onSaveReceipt={onSaveReceipt}
+            onMappingUsed={(m) => setLastMappingUsed(m)}
+          />
+
+          <ImportInssSection
+            inssRecords={inssRecords}
+            inssConfigs={inssConfigs}
+            onImportInssRecords={onImportInssRecords}
+          />
+        </div>
       )}
 
       {tab === "export" && (

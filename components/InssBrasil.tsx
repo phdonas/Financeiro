@@ -5,11 +5,12 @@ import { InssRecord, InssYearlyConfig, StatusTransacao } from '../types';
 interface InssBrasilProps {
   records: InssRecord[];
   configs: InssYearlyConfig[];
-  onSave: (r: InssRecord) => void;
-  onDelete: (id: string) => void;
+  onSave: (r: InssRecord) => void | Promise<void>;
+  onDelete: (id: string) => void | Promise<void>;
+  onPatch: (r: InssRecord) => void | Promise<void>;
 }
 
-const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDelete }) => {
+const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDelete, onPatch }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -18,6 +19,54 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
     competencia: new Date().toISOString().substring(0, 7),
     status: 'PLANEJADO',
     numero_parcela: 1
+  };
+
+  const resolveStatus = (status: StatusTransacao, vencimentoISO: string): StatusTransacao => {
+    if (status === "PAGO") return "PAGO";
+    const todayISO = new Date().toISOString().slice(0, 10);
+    if (vencimentoISO && vencimentoISO <= todayISO) return "ATRASADO";
+    return "PLANEJADO";
+  };
+
+  const resolveValorAndBase = (rec: InssRecord): { valor: number; salario_base: number } => {
+    const ano = Number(String(rec.competencia ?? "").slice(0, 4)) || new Date().getFullYear();
+    const cfg = configs.find((c) => Number(c?.ano) === ano);
+
+    const salario_base = Number(rec.salario_base ?? 0) > 0 ? Number(rec.salario_base) : Number(cfg?.salario_base ?? 0);
+    const perc = Number(cfg?.percentual_inss ?? 0);
+
+    const computed = salario_base > 0 && perc > 0 ? Math.round((salario_base * (perc / 100)) * 100) / 100 : 0;
+
+    const valor = Number(rec.valor ?? 0) > 0 ? Number(rec.valor) : computed;
+
+    return { valor, salario_base };
+  };
+
+  const pendingToLedger = useMemo(() => {
+    return records.filter((r) => Boolean((r as any).lancar_no_ledger) && !String((r as any).transacao_id ?? "").trim());
+  }, [records]);
+
+  const handleInsertMarkedToLedger = async () => {
+    const list = pendingToLedger;
+    if (list.length === 0) {
+      alert("Nenhum registro marcado para inserir no Ledger.");
+      return;
+    }
+
+    for (const rec of list) {
+      const { valor, salario_base } = resolveValorAndBase(rec);
+      const status = resolveStatus(rec.status, rec.vencimento);
+
+      await onSave({
+        ...rec,
+        valor,
+        salario_base,
+        status,
+        lancar_no_ledger: false,
+      });
+    }
+
+    alert(`Inseridos no Ledger: ${list.length} registros.`);
   };
 
   const [formData, setFormData] = useState<Partial<InssRecord>>(initialForm);
@@ -196,6 +245,7 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
               <p className="text-[10px] text-gray-400 font-bold uppercase mt-1 italic tracking-widest">Auditoria de Parcelas GPS/NIT</p>
            </div>
            <button onClick={() => { setEditingId(null); setFormData(initialForm); setIsModalOpen(true); }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-lg hover:scale-105 active:scale-95 transition-all">📅 Lançar Guia GPS</button>
+           <button onClick={handleInsertMarkedToLedger} className="px-8 py-4 bg-gray-900 text-white font-black italic uppercase tracking-wider rounded-[1.5rem] hover:bg-gray-800 active:scale-95 transition-all">📤 Inserir no Ledger ({pendingToLedger.length})</button>
         </div>
 
         <div className="overflow-x-auto">
@@ -207,12 +257,13 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
                 <th className="px-8 py-5">Competência</th>
                 <th className="px-8 py-5 text-right">Valor Guia</th>
                 <th className="px-8 py-5 text-center">Status Auditoria</th>
+                <th className="px-8 py-5 text-center">Lançar no Ledger</th>
                 <th className="px-8 py-5 text-center">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {records.length === 0 ? (
-                <tr><td colSpan={6} className="py-20 text-center text-gray-300 font-black uppercase italic opacity-30">Sem registros sincronizados com a nuvem</td></tr>
+                <tr><td colSpan={7} className="py-20 text-center text-gray-300 font-black uppercase italic opacity-30">Sem registros sincronizados com a nuvem</td></tr>
               ) : (
                 records.sort((a,b) => b.competencia.localeCompare(a.competencia)).map(rec => (
                   <tr key={rec.id} className="hover:bg-gray-50 transition-colors group">
@@ -231,6 +282,19 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
                     <td className="px-8 py-4 text-center">
                        <span className={`px-4 py-1.5 rounded-full text-[8px] font-black uppercase tracking-widest ${rec.status === 'PAGO' ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-orange-50 text-orange-600 border border-orange-100'}`}>{rec.status}</span>
                     </td>
+                    <td className="px-8 py-4 text-center">
+                      <input
+                        type="checkbox"
+                        checked={Boolean((rec as any).lancar_no_ledger)}
+                        onChange={(e) =>
+                          onPatch({
+                            ...rec,
+                            lancar_no_ledger: e.target.checked,
+                          } as any)
+                        }
+                      />
+                    </td>
+
                     <td className="px-8 py-4 text-center">
                        <div className="flex gap-2 justify-center opacity-0 group-hover:opacity-100 transition-all">
                           <button onClick={() => { setEditingId(rec.id); setFormData(rec); setIsModalOpen(true); }} className="w-8 h-8 bg-bb-blue text-white rounded-lg flex items-center justify-center shadow-md">✏️</button>

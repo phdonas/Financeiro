@@ -121,6 +121,8 @@ export interface InssRecord {
   id: string;
   /** Sprint 4.4: id do lançamento vinculado no Ledger (transacoes). */
   transacao_id?: string;
+  /** Import INSS: marcação manual para inserir no Ledger (staging). */
+  lancar_no_ledger?: boolean;
   numero_parcela: number;
   quem: 'Paulo' | 'Débora';
   competencia: string;
