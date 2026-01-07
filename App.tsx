@@ -527,6 +527,47 @@ export default function App() {
     [isCloud, deleteCloud, deleteLocal]
   );
 
+  const onPatchInssRecord = useCallback(
+    async (r: InssRecord) => {
+      const id = String((r as any)?.id ?? "").trim();
+      if (!id) return;
+
+      // remove undefined (Firestore não aceita)
+      const cleaned = Object.fromEntries(
+        Object.entries(r as any).filter(([, v]) => v !== undefined)
+      ) as InssRecord;
+
+      if (isCloud) {
+        const saved = await upsertCloud<InssRecord>("inssRecords", cleaned);
+        setInssRecords((prev) => upsertLocal(prev, saved));
+      } else {
+        setInssRecords((prev) => upsertLocal(prev, cleaned));
+      }
+    },
+    [isCloud, upsertCloud, upsertLocal]
+  );
+
+  const onImportInssRecords = useCallback(
+    async (records: InssRecord[]) => {
+      for (const r of records) {
+        const id = String((r as any)?.id ?? "").trim();
+        if (!id) continue;
+
+        const cleaned = Object.fromEntries(
+          Object.entries(r as any).filter(([, v]) => v !== undefined)
+        ) as InssRecord;
+
+        if (isCloud) {
+          const saved = await upsertCloud<InssRecord>("inssRecords", cleaned);
+          setInssRecords((prev) => upsertLocal(prev, saved));
+        } else {
+          setInssRecords((prev) => upsertLocal(prev, cleaned));
+        }
+      }
+    },
+    [isCloud, upsertCloud, upsertLocal]
+  );
+
   const onSaveInssConfig = useCallback(
     async (cfg: InssYearlyConfig) => {
       const ano = Number((cfg as any)?.ano);
@@ -1133,6 +1174,7 @@ export default function App() {
             configs={inssConfigs}
             onSave={onSaveInssRecord}
             onDelete={onDeleteInssRecord}
+            onPatch={onPatchInssRecord}
           />
         );
       case "receipts":
@@ -1173,6 +1215,7 @@ export default function App() {
             inssConfigs={inssConfigs}
             onSaveTx={onSaveTransacao}
             onSaveReceipt={onSaveReceipt}
+            onImportInssRecords={onImportInssRecords}
           />
         );
       case "settings":
