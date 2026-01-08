@@ -37,26 +37,35 @@ service cloud.firestore {
     // households/{householdId}/members/{uid}
     match /households/{householdId}/members/{uid} {
 
-      // Bootstrap: o próprio usuário pode criar seu membership (evita lockout).
-      allow create: if isSignedIn()
-        && request.auth.uid == uid
+      // Leitura:
+      // - o próprio usuário pode ler seu doc (para checar se tem acesso)
+      // - ADMIN lê docs de membros
+      allow get: if isSignedIn() && (request.auth.uid == uid || isAdmin(householdId));
+      allow list: if isActiveMember(householdId) && isAdmin(householdId);
+
+      // Criação:
+      // - apenas ADMIN cria membros (invite-only entra em sprint 7.2)
+      allow create: if isActiveMember(householdId)
+        && isAdmin(householdId)
         && request.resource.data.uid == uid
         && request.resource.data.householdId == householdId
         && request.resource.data.active == true
         && request.resource.data.role in ["ADMIN", "EDITOR", "LEITOR"];
 
-      // Leitura:
-      // - o próprio usuário lê seu doc
-      // - ADMIN lê docs de membros
-      allow read: if isActiveMember(householdId)
-        && (request.auth.uid == uid || isAdmin(householdId));
-
       // Atualização:
-      // - o próprio usuário atualiza campos "seguros" (nome/email/active)
       // - ADMIN atualiza qualquer membro
+      // - o próprio usuário atualiza apenas campos "seguros" (nome/email)
       // Proteção: uid/householdId não podem mudar
+      // Proteção: self não pode alterar role/active
       allow update: if isActiveMember(householdId)
-        && (request.auth.uid == uid || isAdmin(householdId))
+        && (
+          (isAdmin(householdId))
+          || (
+            request.auth.uid == uid
+            && request.resource.data.role == resource.data.role
+            && request.resource.data.active == resource.data.active
+          )
+        )
         && request.resource.data.uid == uid
         && request.resource.data.householdId == householdId;
 
@@ -84,4 +93,3 @@ service cloud.firestore {
     }
   }
 }
-

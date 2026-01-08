@@ -44,6 +44,37 @@ export type HouseholdMember = {
 };
 
 /**
+ * Retorna o membership do usuário no household (ou null se não existir).
+ * Sprint 7.1: invite-only → não criamos membership automaticamente aqui.
+ */
+export async function getHouseholdMember(
+  uid: string,
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<HouseholdMember | null> {
+  if (!uid) return null;
+  const memberRef = doc(db, `${householdPath(householdId)}/members/${uid}`);
+  const snap = await getDoc(memberRef);
+  if (!snap.exists()) return null;
+  const data = snap.data() as any;
+
+  const role: MemberRole =
+    data?.role === "ADMIN" || data?.role === "EDITOR" || data?.role === "LEITOR"
+      ? data.role
+      : "LEITOR";
+
+  return {
+    uid: String(data?.uid ?? uid),
+    householdId: String(data?.householdId ?? householdId),
+    role,
+    active: Boolean(data?.active),
+    email: (data?.email ?? null) as any,
+    name: (data?.name ?? null) as any,
+    createdAt: data?.createdAt,
+    updatedAt: data?.updatedAt,
+  };
+}
+
+/**
  * Garante que o usuário exista como membro do household.
  * Padrão do projeto: households/{householdId}/members/{uid}
  *

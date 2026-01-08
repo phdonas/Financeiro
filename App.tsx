@@ -31,7 +31,7 @@ import {
 import {
   DEFAULT_HOUSEHOLD_ID,
   StorageMode,
-  ensureHouseholdMember,
+  getHouseholdMember,
   getStorageMode,
   setStorageMode as setStorageModeCloud,
   listHouseholdItems,
@@ -90,31 +90,39 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [membershipReady, setMembershipReady] = useState(false);
+  const [memberRole, setMemberRole] = useState<
+    "ADMIN" | "EDITOR" | "LEITOR" | null
+  >(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       // "authReady" deve sinalizar que o bootstrap mínimo terminou.
-      // Como as Rules podem depender do membership, garantimos membership ANTES
-      // de liberar leituras em households/{...}.
+      // Sprint 7.1: invite-only → não cria membership automaticamente.
       setAuthReady(false);
       setUser(u);
 
       if (!u) {
         setMembershipReady(false);
+        setMemberRole(null);
         setAuthReady(true);
         return;
       }
 
       setMembershipReady(false);
       try {
-        await ensureHouseholdMember(u.uid, householdId, {
-          email: u.email ?? null,
-          name: u.displayName ?? null,
-        });
+        const m = await getHouseholdMember(u.uid, householdId);
+        if (m && m.active) {
+          setMemberRole(m.role as any);
+          setMembershipReady(true);
+        } else {
+          setMemberRole(null);
+          setMembershipReady(false);
+        }
       } catch (e) {
-        console.error("Falha ao garantir membership:", e);
+        console.error("Falha ao validar membership:", e);
+        setMemberRole(null);
+        setMembershipReady(false);
       } finally {
-        setMembershipReady(true);
         setAuthReady(true);
       }
     });
@@ -152,7 +160,7 @@ export default function App() {
     }
 
     // ⚠️ Se as rules exigem membership para ler settings,
-    // esperar o bootstrap (ensureHouseholdMember) evita "insufficient permissions".
+    // esperar a validação do membership evita "insufficient permissions".
     if (!membershipReady) return;
 
     (async () => {
@@ -1266,6 +1274,32 @@ export default function App() {
           >
             Entrar com Google
           </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Sprint 7.1: invite-only. Usuário autenticado, porém sem membership ativo.
+  if (!membershipReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="bg-white shadow-xl rounded-2xl p-8 w-full max-w-lg">
+          <h1 className="text-xl font-black mb-2">Acesso restrito</h1>
+          <p className="text-sm text-gray-700 mb-4">
+            Seu e-mail <strong>{user.email}</strong> ainda não tem permissão neste household.
+          </p>
+          <p className="text-sm text-gray-600 mb-6">
+            Solicite ao administrador um convite (sprint 7.2) ou inclusão manual em
+            <span className="font-semibold"> households/{householdId}/members</span>.
+          </p>
+          <div className="flex gap-3">
+            <button
+              onClick={handleLogout}
+              className="rounded-xl bg-black text-white px-4 py-2 text-sm font-bold hover:opacity-90 transition"
+            >
+              Sair
+            </button>
+          </div>
         </div>
       </div>
     );
