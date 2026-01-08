@@ -13,6 +13,7 @@ import {
   setDoc,
   startAfter,
   where,
+  runTransaction,
 } from "firebase/firestore";
 
 import type { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
@@ -42,6 +43,146 @@ export type HouseholdMember = {
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 };
+
+export type HouseholdInviteStatus = "pending" | "accepted" | "revoked";
+
+export type HouseholdInvite = {
+  email: string;
+  emailLower: string;
+  role: MemberRole;
+  status: HouseholdInviteStatus;
+  createdAt?: Timestamp;
+  createdBy?: string | null;
+  acceptedAt?: Timestamp;
+  acceptedByUid?: string | null;
+  revokedAt?: Timestamp;
+  revokedBy?: string | null;
+  updatedAt?: Timestamp;
+};
+
+function normalizeEmailLower(email: string | null | undefined): string {
+  return String(email ?? "").trim().toLowerCase();
+}
+
+/**
+ * Retorna o convite do e-mail no household: households/{householdId}/invites/{emailLower}
+ * Sprint 7.2: invite-only por e-mail.
+ */
+export async function getHouseholdInviteByEmail(
+  email: string | null | undefined,
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<HouseholdInvite | null> {
+  const emailLower = normalizeEmailLower(email);
+  if (!emailLower) return null;
+
+  const inviteRef = doc(db, `${householdPath(householdId)}/invites/${emailLower}`);
+  const snap = await getDoc(inviteRef);
+  if (!snap.exists()) return null;
+
+  const data = snap.data() as any;
+
+  const role: MemberRole =
+    data?.role === "ADMIN" || data?.role === "EDITOR" || data?.role === "LEITOR"
+      ? data.role
+      : "LEITOR";
+
+  const status: HouseholdInviteStatus =
+    data?.status === "pending" || data?.status === "accepted" || data?.status === "revoked"
+      ? data.status
+      : "pending";
+
+  return {
+    email: String(data?.email ?? emailLower),
+    emailLower: String(data?.emailLower ?? emailLower),
+    role,
+    status,
+    createdAt: data?.createdAt,
+    createdBy: (data?.createdBy ?? null) as any,
+    acceptedAt: data?.acceptedAt,
+    acceptedByUid: (data?.acceptedByUid ?? null) as any,
+    revokedAt: data?.revokedAt,
+    revokedBy: (data?.revokedBy ?? null) as any,
+    updatedAt: data?.updatedAt,
+  };
+}
+
+/**
+ * Aceita um convite e cria o membership do usuário no household.
+ * Operação atômica via transaction.
+ */
+export async function acceptHouseholdInvite(params: {
+  uid: string;
+  email: string | null | undefined;
+  name?: string | null;
+  householdId?: string;
+}): Promise<HouseholdMember> {
+  const householdId = params.householdId ?? DEFAULT_HOUSEHOLD_ID;
+  const uid = String(params.uid ?? "");
+  const emailLower = normalizeEmailLower(params.email);
+
+  if (!uid) throw new Error("MISSING_UID");
+  if (!emailLower) throw new Error("MISSING_EMAIL");
+
+  const inviteRef = doc(db, `${householdPath(householdId)}/invites/${emailLower}`);
+  const memberRef = doc(db, `${householdPath(householdId)}/members/${uid}`);
+
+  return await runTransaction(db, async (tx) => {
+    const now = Timestamp.now();
+
+    const inviteSnap = await tx.get(inviteRef);
+    if (!inviteSnap.exists()) throw new Error("INVITE_NOT_FOUND");
+
+    const invite = inviteSnap.data() as any;
+    const status: HouseholdInviteStatus =
+      invite?.status === "pending" || invite?.status === "accepted" || invite?.status === "revoked"
+        ? invite.status
+        : "pending";
+
+    if (status !== "pending") throw new Error("INVITE_NOT_PENDING");
+
+    const role: MemberRole =
+      invite?.role === "ADMIN" || invite?.role === "EDITOR" || invite?.role === "LEITOR"
+        ? invite.role
+        : "LEITOR";
+
+    // Cria/atualiza membership
+    tx.set(
+      memberRef,
+      {
+        uid,
+        householdId,
+        role,
+        active: true,
+        email: params.email ?? null,
+        name: params.name ?? null,
+        updatedAt: now,
+        createdAt: now,
+      },
+      { merge: true }
+    );
+
+    // Marca convite como aceito
+    tx.update(inviteRef, {
+      status: "accepted",
+      acceptedAt: now,
+      acceptedByUid: uid,
+      updatedAt: now,
+    });
+
+    return {
+      uid,
+      householdId,
+      role,
+      active: true,
+      email: (params.email ?? null) as any,
+      name: (params.name ?? null) as any,
+      createdAt: now,
+      updatedAt: now,
+    };
+  });
+}
+
+
 
 /**
  * Retorna o membership do usuário no household (ou null se não existir).
