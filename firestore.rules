@@ -33,6 +33,23 @@ service cloud.firestore {
       return isAdmin(householdId) || role(householdId) == "EDITOR";
     }
 
+    // -------------------- INVITES HELPERS --------------------
+    function emailLower() {
+      return isSignedIn() && request.auth.token.email != null
+        ? request.auth.token.email.toLowerCase()
+        : "";
+    }
+
+    function invitePath(householdId, emailLowerDoc) {
+      return /databases/$(database)/documents/households/$(householdId)/invites/$(emailLowerDoc);
+    }
+
+    function hasPendingInvite(householdId) {
+      return emailLower() != ""
+        && exists(invitePath(householdId, emailLower()))
+        && get(invitePath(householdId, emailLower())).data.status == "pending";
+    }
+
     // -------------------- MEMBERSHIP --------------------
     // households/{householdId}/members/{uid}
     match /households/{householdId}/members/{uid} {
@@ -44,13 +61,27 @@ service cloud.firestore {
       allow list: if isActiveMember(householdId) && isAdmin(householdId);
 
       // Criação:
-      // - apenas ADMIN cria membros (invite-only entra em sprint 7.2)
-      allow create: if isActiveMember(householdId)
-        && isAdmin(householdId)
-        && request.resource.data.uid == uid
-        && request.resource.data.householdId == householdId
-        && request.resource.data.active == true
-        && request.resource.data.role in ["ADMIN", "EDITOR", "LEITOR"];
+      // - ADMIN cria membros
+      // - Convidado cria o próprio membership ao aceitar convite (sprint 7.2)
+      allow create: if
+        (
+          isActiveMember(householdId)
+          && isAdmin(householdId)
+          && request.resource.data.uid == uid
+          && request.resource.data.householdId == householdId
+          && request.resource.data.active == true
+          && request.resource.data.role in ["ADMIN", "EDITOR", "LEITOR"]
+        )
+        || (
+          isSignedIn()
+          && request.auth.uid == uid
+          && hasPendingInvite(householdId)
+          && request.resource.data.uid == uid
+          && request.resource.data.householdId == householdId
+          && request.resource.data.active == true
+          && request.resource.data.role == get(invitePath(householdId, emailLower())).data.role
+          && request.resource.data.role in ["ADMIN", "EDITOR", "LEITOR"]
+        );
 
       // Atualização:
       // - ADMIN atualiza qualquer membro
@@ -70,6 +101,39 @@ service cloud.firestore {
         && request.resource.data.householdId == householdId;
 
       allow delete: if false;
+    }
+
+    // -------------------- INVITES --------------------
+    // households/{householdId}/invites/{emailLowerDoc}
+    match /households/{householdId}/invites/{emailLowerDoc} {
+      // Leitura:
+      // - ADMIN lê convites
+      // - o próprio convidado pode ler o convite do seu e-mail (docId = emailLower)
+      allow get: if isSignedIn() && (isAdmin(householdId) || emailLowerDoc == emailLower());
+      allow list: if isActiveMember(householdId) && isAdmin(householdId);
+
+      // Criação/Revogação:
+      // - somente ADMIN cria/revoga convites (UI entra em sprint 7.3)
+      allow create, delete: if isActiveMember(householdId) && isAdmin(householdId);
+
+      // Update:
+      // - ADMIN pode atualizar
+      // - convidado pode apenas aceitar (pending -> accepted), alterando somente campos permitidos
+      allow update: if
+        (isActiveMember(householdId) && isAdmin(householdId))
+        || (
+          isSignedIn()
+          && emailLowerDoc == emailLower()
+          && resource.data.status == "pending"
+          && request.resource.data.status == "accepted"
+          && request.resource.data.acceptedByUid == request.auth.uid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.emailLower == resource.data.emailLower
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            "status", "acceptedAt", "acceptedByUid", "updatedAt"
+          ])
+        );
     }
 
     // -------------------- SETTINGS --------------------

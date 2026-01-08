@@ -32,6 +32,8 @@ import {
   DEFAULT_HOUSEHOLD_ID,
   StorageMode,
   getHouseholdMember,
+  getHouseholdInviteByEmail,
+  acceptHouseholdInvite,
   getStorageMode,
   setStorageMode as setStorageModeCloud,
   listHouseholdItems,
@@ -94,12 +96,21 @@ export default function App() {
     "ADMIN" | "EDITOR" | "LEITOR" | null
   >(null);
 
+  // Sprint 7.2: convite por e-mail (accept invite)
+  const [invite, setInvite] = useState<HouseholdInvite | null>(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteInfo, setInviteInfo] = useState<string | null>(null);
+
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       // "authReady" deve sinalizar que o bootstrap mínimo terminou.
       // Sprint 7.1: invite-only → não cria membership automaticamente.
       setAuthReady(false);
       setUser(u);
+      setInvite(null);
+      setInviteError(null);
+      setInviteInfo(null);
 
       if (!u) {
         setMembershipReady(false);
@@ -137,6 +148,86 @@ export default function App() {
   const handleLogout = async () => {
     await signOut(auth);
   };
+
+
+// -------------------- INVITE (Sprint 7.2) --------------------
+const handleCheckInvite = useCallback(async () => {
+  if (!user?.email) {
+    setInvite(null);
+    setInviteError("Não foi possível identificar o e-mail da sua conta Google.");
+    setInviteInfo(null);
+    return;
+  }
+
+  setInviteLoading(true);
+  setInviteError(null);
+  setInviteInfo(null);
+  try {
+    const inv = await getHouseholdInviteByEmail(user.email, householdId);
+    setInvite(inv);
+
+    if (!inv) {
+      setInviteError("Nenhum convite encontrado para este e-mail.");
+    } else if (inv.status === "revoked") {
+      setInviteError("Seu convite foi revogado. Solicite um novo convite ao administrador.");
+    } else if (inv.status === "accepted") {
+      setInviteInfo("Convite já está como aceito. Se ainda não liberou o acesso, recarregue a página.");
+    } else {
+      setInviteInfo(`Convite pendente encontrado. Perfil: ${inv.role}.`);
+    }
+  } catch (e) {
+    console.error("Falha ao verificar convite:", e);
+    setInvite(null);
+    setInviteError("Falha ao verificar convite. Tente novamente.");
+  } finally {
+    setInviteLoading(false);
+  }
+}, [user, householdId]);
+
+const handleAcceptInvite = useCallback(async () => {
+  if (!user) return;
+  if (!user.email) {
+    setInviteError("Não foi possível identificar o e-mail da sua conta Google.");
+    return;
+  }
+
+  setInviteLoading(true);
+  setInviteError(null);
+  setInviteInfo(null);
+
+  try {
+    await acceptHouseholdInvite({
+      uid: user.uid,
+      email: user.email,
+      name: user.displayName ?? null,
+      householdId,
+    });
+
+    const m = await getHouseholdMember(user.uid, householdId);
+    if (m && m.active) {
+      setMemberRole(m.role as any);
+      setMembershipReady(true);
+      setInviteInfo("Convite aceito. Acesso liberado.");
+    } else {
+      setMembershipReady(false);
+      setInviteInfo("Convite aceito, mas o acesso ainda não ficou ativo. Recarregue a página.");
+    }
+  } catch (e: any) {
+    const msg = String(e?.message ?? "");
+    if (msg.includes("INVITE_NOT_FOUND")) {
+      setInviteError("Convite não encontrado para este e-mail.");
+    } else if (msg.includes("INVITE_NOT_PENDING")) {
+      setInviteError("Este convite não está mais pendente (já aceito ou revogado).");
+    } else if (msg.includes("permission") || msg.includes("PERMISSION")) {
+      setInviteError("Sem permissão para aceitar o convite. Confirme se as Firestore Rules foram publicadas.");
+    } else {
+      setInviteError("Falha ao aceitar convite. Tente novamente.");
+    }
+    console.error("Falha ao aceitar convite:", e);
+  } finally {
+    setInviteLoading(false);
+  }
+}, [user, householdId]);
 
   // -------------------- VIEW MODE --------------------
   const [viewMode, setViewMode] = useState<ViewMode>("GLOBAL");
@@ -1279,8 +1370,10 @@ export default function App() {
     );
   }
 
-  // Sprint 7.1: invite-only. Usuário autenticado, porém sem membership ativo.
+  // Sprint 7.x: invite-only. Usuário autenticado, porém sem membership ativo.
   if (!membershipReady) {
+    const canAccept = invite && invite.status === "pending" && !inviteLoading;
+
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="bg-white shadow-xl rounded-2xl p-8 w-full max-w-lg">
@@ -1288,22 +1381,74 @@ export default function App() {
           <p className="text-sm text-gray-700 mb-4">
             Seu e-mail <strong>{user.email}</strong> ainda não tem permissão neste household.
           </p>
-          <p className="text-sm text-gray-600 mb-6">
-            Solicite ao administrador um convite (sprint 7.2) ou inclusão manual em
-            <span className="font-semibold"> households/{householdId}/members</span>.
-          </p>
-          <div className="flex gap-3">
+
+          <div className="bg-gray-50 border rounded-xl p-4 mb-4">
+            <div className="text-[11px] font-black tracking-widest text-gray-700 mb-2">
+              COMO LIBERAR O ACESSO
+            </div>
+            <ol className="list-decimal ml-5 text-sm text-gray-700 space-y-1">
+              <li>Peça ao administrador para criar um convite para seu e-mail.</li>
+              <li>Clique em <strong>Verificar convite</strong> e depois em <strong>Aceitar convite</strong>.</li>
+              <li>Após aceitar, o app libera automaticamente o acesso.</li>
+            </ol>
+          </div>
+
+          <div className="flex flex-wrap gap-3 items-center mb-4">
+            <button
+              onClick={handleCheckInvite}
+              disabled={inviteLoading}
+              className={`rounded-xl px-4 py-2 text-sm font-bold transition ${
+                inviteLoading ? "bg-gray-200 text-gray-500" : "bg-black text-white hover:opacity-90"
+              }`}
+            >
+              {inviteLoading ? "Verificando…" : "Verificar convite"}
+            </button>
+
+            <button
+              onClick={handleAcceptInvite}
+              disabled={!canAccept}
+              className={`rounded-xl px-4 py-2 text-sm font-bold transition ${
+                canAccept ? "bg-green-600 text-white hover:opacity-90" : "bg-gray-200 text-gray-500"
+              }`}
+            >
+              Aceitar convite
+            </button>
+
             <button
               onClick={handleLogout}
-              className="rounded-xl bg-black text-white px-4 py-2 text-sm font-bold hover:opacity-90 transition"
+              className="rounded-xl border px-4 py-2 text-sm font-bold hover:bg-gray-50 transition"
             >
               Sair
             </button>
+          </div>
+
+          {invite && (
+            <div className="text-xs text-gray-700 mb-2">
+              <span className="font-bold">Status do convite:</span> {invite.status} ·{" "}
+              <span className="font-bold">Perfil:</span> {invite.role}
+            </div>
+          )}
+
+          {inviteInfo && (
+            <div className="text-sm text-gray-700 mb-2">{inviteInfo}</div>
+          )}
+
+          {inviteError && (
+            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+              {inviteError}
+            </div>
+          )}
+
+          <div className="mt-4 text-xs text-gray-500">
+            Admin (alternativa): incluir manualmente em{" "}
+            <span className="font-semibold">households/{householdId}/members</span> ou criar convite em{" "}
+            <span className="font-semibold">households/{householdId}/invites</span>.
           </div>
         </div>
       </div>
     );
   }
+
 
   return (
     <div className="min-h-screen flex bg-gray-50">
