@@ -35,8 +35,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const menuItems = [
     { id: "dashboard", label: "Painel Geral", icon: "🏠" },
-    { id: "ai_advisor", label: "Consultor IA", icon: "🤖" },
-    { id: "ledger", label: "Lançamentos", icon: "📑" },
+{ id: "ledger", label: "Lançamentos", icon: "📑" },
     { id: "calendar", label: "Agenda Financeira", icon: "📅" },
     { id: "inss", label: "INSS Brasil", icon: "🇧🇷" },
     { id: "receipts", label: "Meus Recibos", icon: "🧾" },
