@@ -13,6 +13,12 @@ interface InssBrasilProps {
 const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDelete, onPatch }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [filterQuem, setFilterQuem] = useState<'Todos' | 'Paulo' | 'Débora'>('Todos');
+  const [filterStatus, setFilterStatus] = useState<'Todos' | StatusTransacao>('Todos');
+  const [fromMonth, setFromMonth] = useState<string>('');
+  const [fromYear, setFromYear] = useState<string>('');
+  const [toMonth, setToMonth] = useState<string>('');
+  const [toYear, setToYear] = useState<string>('');
 
   const initialForm: Partial<InssRecord> = {
     quem: 'Paulo',
@@ -20,6 +26,54 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
     status: 'PLANEJADO',
     numero_parcela: 1
   };
+
+
+  const monthOptions: Array<{ value: string; label: string }> = [
+    { value: '01', label: '01' }, { value: '02', label: '02' }, { value: '03', label: '03' }, { value: '04', label: '04' },
+    { value: '05', label: '05' }, { value: '06', label: '06' }, { value: '07', label: '07' }, { value: '08', label: '08' },
+    { value: '09', label: '09' }, { value: '10', label: '10' }, { value: '11', label: '11' }, { value: '12', label: '12' }
+  ];
+
+  const parseDateFlexible = (raw?: string): Date | null => {
+    const s = String(raw ?? '').trim();
+    if (!s) return null;
+
+    // YYYY-MM-DD
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const d = new Date(s + 'T12:00:00');
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    // YYYY-MM
+    if (/^\d{4}-\d{2}$/.test(s)) {
+      const d = new Date(s + '-01T12:00:00');
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    // DD/MM/YYYY
+    if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
+      const [dd, mm, yyyy] = s.split('/').map(Number);
+      const d = new Date(yyyy, mm - 1, dd, 12, 0, 0);
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    // MM/YYYY
+    if (/^\d{2}\/\d{4}$/.test(s)) {
+      const [mm, yyyy] = s.split('/').map(Number);
+      const d = new Date(yyyy, mm - 1, 1, 12, 0, 0);
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    // Fallback
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const formatDateBR = (raw?: string): string => {
+    const d = parseDateFlexible(raw);
+    return d ? d.toLocaleDateString('pt-BR') : 'Aguardando Cálculo';
+  };
+
 
   const resolveStatus = (status: StatusTransacao, vencimentoISO: string): StatusTransacao => {
     if (status === "PAGO") return "PAGO";
@@ -90,14 +144,14 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
       debora: { total_parcelas: 0, nit: '', data_aposentadoria: '' }
     };
 
-    const pauloRecsYear = records.filter(r => r.quem === 'Paulo' && r.competencia?.startsWith(String(config.ano)));
-    const deboraRecsYear = records.filter(r => r.quem === 'Débora' && r.competencia?.startsWith(String(config.ano)));
+    const pauloRecsAll = records.filter(r => r.quem === 'Paulo');
+    const deboraRecsAll = records.filter(r => r.quem === 'Débora');
 
-    const pauloPagas = pauloRecsYear.filter(r => r.status === 'PAGO').length;
-    const deboraPagas = deboraRecsYear.filter(r => r.status === 'PAGO').length;
+    const pauloPagas = pauloRecsAll.filter(r => r.status === 'PAGO').length;
+    const deboraPagas = deboraRecsAll.filter(r => r.status === 'PAGO').length;
 
-    const pauloTotal = config.paulo?.total_parcelas ?? 0;
-    const deboraTotal = config.debora?.total_parcelas ?? 0;
+    const pauloTotal = pauloRecsAll.length;
+    const deboraTotal = deboraRecsAll.length;
 
     const pauloAPagar = Math.max(pauloTotal - pauloPagas, 0);
     const deboraAPagar = Math.max(deboraTotal - deboraPagas, 0);
@@ -125,6 +179,55 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
       consolidado: { total, pagas, a_pagar }
     };
   }, [records, configs]);
+
+  const yearsOptions = useMemo(() => {
+    const ys = new Set<number>();
+    records.forEach((r) => {
+      const y = Number(String(r.competencia ?? '').slice(0, 4));
+      if (y) ys.add(y);
+    });
+    const arr = Array.from(ys).sort((a, b) => a - b);
+    const now = new Date().getFullYear();
+    if (!ys.has(now)) arr.push(now);
+    return arr;
+  }, [records]);
+
+  const filteredRecords = useMemo(() => {
+    const ymToNum = (year: number, month: number) => year * 12 + (month - 1);
+
+    const fromY = fromYear ? Number(fromYear) : 0;
+    const fromM = fromMonth ? Number(fromMonth) : 1;
+    const toY = toYear ? Number(toYear) : 0;
+    const toM = toMonth ? Number(toMonth) : 12;
+
+    const fromNum = fromY ? ymToNum(fromY, fromM) : null;
+    const toNum = toY ? ymToNum(toY, toM) : null;
+
+    return records.filter((r) => {
+      if (filterQuem !== 'Todos' && r.quem !== filterQuem) return false;
+      if (filterStatus !== 'Todos' && r.status !== filterStatus) return false;
+
+      const y = Number(String(r.competencia ?? '').slice(0, 4));
+      const m = Number(String(r.competencia ?? '').slice(5, 7));
+      if (!y || !m) return false;
+
+      const v = ymToNum(y, m);
+      if (fromNum !== null && v < fromNum) return false;
+      if (toNum !== null && v > toNum) return false;
+
+      return true;
+    });
+  }, [records, filterQuem, filterStatus, fromMonth, fromYear, toMonth, toYear]);
+
+  const clearFilters = () => {
+    setFilterQuem('Todos');
+    setFilterStatus('Todos');
+    setFromMonth('');
+    setFromYear('');
+    setToMonth('');
+    setToYear('');
+  };
+
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault();
@@ -180,7 +283,7 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
               </div>
               <div className="flex justify-between items-center bg-blue-50/50 p-4 rounded-2xl border border-blue-100">
                  <span className="text-[9px] font-black text-bb-blue uppercase italic">Previsão Aposentadoria</span>
-                 <span className="text-[11px] font-black text-bb-blue italic">{stats.paulo.aposentadoria ? new Date(stats.paulo.aposentadoria).toLocaleDateString('pt-BR') : 'Aguardando Cálculo'}</span>
+                 <span className="text-[11px] font-black text-bb-blue italic">{formatDateBR(stats.paulo.aposentadoria)}</span>
               </div>
            </div>
         </div>
@@ -205,7 +308,7 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
               </div>
               <div className="flex justify-between items-center bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100">
                  <span className="text-[9px] font-black text-emerald-600 uppercase italic">Previsão Aposentadoria</span>
-                 <span className="text-[11px] font-black text-emerald-600 italic">{stats.debora.aposentadoria ? new Date(stats.debora.aposentadoria).toLocaleDateString('pt-BR') : 'Aguardando Cálculo'}</span>
+                 <span className="text-[11px] font-black text-emerald-600 italic">{formatDateBR(stats.debora.aposentadoria)}</span>
               </div>
            </div>
         </div>
@@ -248,6 +351,73 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
            <button onClick={handleInsertMarkedToLedger} className="px-8 py-4 bg-gray-900 text-white font-black italic uppercase tracking-wider rounded-[1.5rem] hover:bg-gray-800 active:scale-95 transition-all">📤 Inserir no Ledger ({pendingToLedger.length})</button>
         </div>
 
+        <div className="px-8 py-6 border-b border-gray-50 bg-gray-50/30">
+          <div className="flex flex-wrap items-end gap-4">
+            <div className="flex items-end gap-3">
+              <div>
+                <label className="block text-[9px] font-black text-gray-400 uppercase italic tracking-widest">De Mês</label>
+                <select value={fromMonth} onChange={(e) => setFromMonth(e.target.value)} className="mt-1 px-3 py-2 rounded-xl border border-gray-200 bg-white text-[11px] font-bold text-gray-700">
+                  <option value="">--</option>
+                  {monthOptions.map((m) => (<option key={m.value} value={m.value}>{m.label}</option>))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[9px] font-black text-gray-400 uppercase italic tracking-widest">De Ano</label>
+                <select value={fromYear} onChange={(e) => setFromYear(e.target.value)} className="mt-1 px-3 py-2 rounded-xl border border-gray-200 bg-white text-[11px] font-bold text-gray-700">
+                  <option value="">----</option>
+                  {yearsOptions.map((y) => (<option key={y} value={String(y)}>{y}</option>))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-end gap-3">
+              <div>
+                <label className="block text-[9px] font-black text-gray-400 uppercase italic tracking-widest">Até Mês</label>
+                <select value={toMonth} onChange={(e) => setToMonth(e.target.value)} className="mt-1 px-3 py-2 rounded-xl border border-gray-200 bg-white text-[11px] font-bold text-gray-700">
+                  <option value="">--</option>
+                  {monthOptions.map((m) => (<option key={m.value} value={m.value}>{m.label}</option>))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[9px] font-black text-gray-400 uppercase italic tracking-widest">Até Ano</label>
+                <select value={toYear} onChange={(e) => setToYear(e.target.value)} className="mt-1 px-3 py-2 rounded-xl border border-gray-200 bg-white text-[11px] font-bold text-gray-700">
+                  <option value="">----</option>
+                  {yearsOptions.map((y) => (<option key={y} value={String(y)}>{y}</option>))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[9px] font-black text-gray-400 uppercase italic tracking-widest">Contribuinte</label>
+              <select value={filterQuem} onChange={(e) => setFilterQuem(e.target.value as any)} className="mt-1 px-3 py-2 rounded-xl border border-gray-200 bg-white text-[11px] font-bold text-gray-700">
+                <option value="Todos">Todos</option>
+                <option value="Paulo">Paulo</option>
+                <option value="Débora">Débora</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[9px] font-black text-gray-400 uppercase italic tracking-widest">Status</label>
+              <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as any)} className="mt-1 px-3 py-2 rounded-xl border border-gray-200 bg-white text-[11px] font-bold text-gray-700">
+                <option value="Todos">Todos</option>
+                <option value="PLANEJADO">PLANEJADO</option>
+                <option value="PENDENTE">PENDENTE</option>
+                <option value="ATRASADO">ATRASADO</option>
+                <option value="PAGO">PAGO</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button type="button" onClick={clearFilters} className="px-4 py-2 rounded-xl bg-white border border-gray-200 text-[11px] font-black text-gray-600 uppercase italic tracking-widest hover:shadow-sm active:scale-95 transition-all">
+                Limpar
+              </button>
+              <span className="text-[10px] text-gray-400 font-black uppercase italic tracking-widest">
+                Exibindo {filteredRecords.length} de {records.length}
+              </span>
+            </div>
+          </div>
+        </div>
+
         <div className="overflow-x-auto">
           <table className="w-full text-left text-[11px]">
             <thead className="bg-gray-50 text-bb-blue uppercase font-black italic border-b border-gray-100">
@@ -264,8 +434,10 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
             <tbody className="divide-y divide-gray-50">
               {records.length === 0 ? (
                 <tr><td colSpan={7} className="py-20 text-center text-gray-300 font-black uppercase italic opacity-30">Sem registros sincronizados com a nuvem</td></tr>
+              ) : filteredRecords.length === 0 ? (
+                <tr><td colSpan={7} className="py-20 text-center text-gray-400 font-black italic opacity-30">Nenhum registro encontrado com os filtros</td></tr>
               ) : (
-                records.sort((a,b) => b.competencia.localeCompare(a.competencia)).map(rec => (
+                filteredRecords.slice().sort((a,b) => b.competencia.localeCompare(a.competencia)).map(rec => (
                   <tr key={rec.id} className="hover:bg-gray-50 transition-colors group">
                     <td className="px-8 py-4 font-black text-gray-400">#{rec.numero_parcela.toString().padStart(3, '0')}</td>
                     <td className="px-8 py-4">
