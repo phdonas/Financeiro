@@ -9,7 +9,6 @@ import {
 
 import Sidebar from "./components/Sidebar";
 import Dashboard from "./components/Dashboard";
-import AIAdvisor from "./components/AIAdvisor";
 import Ledger from "./components/Ledger";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import Calendar from "./components/Calendar";
@@ -1214,7 +1213,6 @@ const handleAcceptInvite = useCallback(async () => {
   const contentTitle = useMemo(() => {
     const map: Record<string, string> = {
       dashboard: "Painel Geral",
-      ai_advisor: "Consultor IA",
       ledger: "Lançamentos",
       calendar: "Agenda Financeira",
       inss: "INSS Brasil",
@@ -1240,14 +1238,6 @@ const handleAcceptInvite = useCallback(async () => {
             exchangeRates={exchangeRates}
             storageMode={storageMode}
             setStorageMode={setStorageModeSafe}
-          />
-        );
-      case "ai_advisor":
-        return (
-          <AIAdvisor
-            transacoes={transacoes}
-            investments={investments}
-            viewMode={viewMode}
           />
         );
       case "ledger":
