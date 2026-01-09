@@ -258,13 +258,15 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
       return (
         pick(n => n.includes('NB')) ||
         pick(n => n.includes('NOVO BANCO')) ||
+        pick(n => n.includes('NOVOBANCO')) ||
+        pick(n => n.includes('NOVO-BANCO')) ||
         list[0]?.id ||
         ''
       );
     }
     return (
       pick(n => n.includes('BANCO DO BRASIL')) ||
-      pick(n => n === 'BB' || n.includes(' BB')) ||
+      pick(n => n === 'BB' || n.includes(' BB') || n.endsWith(' BB') || n.includes('BB ') || n.endsWith('BB')) ||
       pick(n => n.startsWith('BB ')) ||
       list[0]?.id ||
       ''
@@ -493,10 +495,10 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                       <p className="text-[7px] text-gray-400 uppercase italic leading-none">{categorias.find(c => c.id === r.categoria_id)?.contas.find(i => i.id === r.conta_contabil_id)?.nome}</p>
                     </td>
                     <td className="px-6 py-3 text-right font-bold text-gray-400 italic">
-                      {r.country_code === 'PT' ? '€' : 'R$'} {r.base_amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      {r.country_code === 'PT' ? '€' : 'R$'} {r.base_amount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="px-6 py-3 text-right font-black text-bb-blue text-[12px] italic">
-                      {r.country_code === 'PT' ? '€' : 'R$'} {r.received_amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                      {r.country_code === 'PT' ? '€' : 'R$'} {r.received_amount.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td className="px-6 py-3 text-center">
                       <span className={`px-4 py-1 rounded-full text-[8px] font-black uppercase tracking-widest ${r.is_paid ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-orange-50 text-orange-600 border border-orange-100'}`}>
@@ -682,12 +684,20 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                         <div className="text-gray-200 font-black text-xl select-none">➔</div>
                         <div className="flex-1 min-w-[140px] space-y-1.5">
                            <label className="text-[9px] font-black text-red-400 uppercase ml-1 italic">{calcs.tax1Label} %</label>
-                           <input type="number" step="0.1" className="w-full bg-white p-4 rounded-xl text-xl font-black text-red-500 border border-gray-100 outline-none" value={formData.country_code === 'PT' ? formData.irs_rate : formData.inss_rate} onChange={e => setFormData({...formData, [formData.country_code === 'PT' ? 'irs_rate' : 'inss_rate']: Number(e.target.value)})} />
+                           <input type="number" step="0.01" className="w-full bg-white p-4 rounded-xl text-xl font-black text-red-500 border border-gray-100 outline-none" value={formData.country_code === 'PT' ? formData.irs_rate : formData.inss_rate} onChange={e => {
+                             const v = Number(e.target.value);
+                             const key = (formData.country_code === 'PT' ? 'irs_rate' : 'inss_rate') as any;
+                             setFormData({ ...(formData as any), [key]: Math.round(v * 100) / 100 });
+                           }} />
                         </div>
                         <div className="text-gray-200 font-black text-xl select-none">➔</div>
                         <div className="flex-1 min-w-[140px] space-y-1.5">
                            <label className={`text-[9px] font-black uppercase ml-1 italic ${formData.country_code === 'PT' ? 'text-emerald-500' : 'text-red-400'}`}>{calcs.tax2Label} %</label>
-                           <input type="number" step="0.1" className={`w-full bg-white p-4 rounded-xl text-xl font-black border border-gray-100 outline-none ${formData.country_code === 'PT' ? 'text-emerald-600' : 'text-red-500'}`} value={formData.country_code === 'PT' ? formData.iva_rate : formData.irpf_rate} onChange={e => setFormData({...formData, [formData.country_code === 'PT' ? 'iva_rate' : 'irpf_rate']: Number(e.target.value)})} />
+                           <input type="number" step="0.01" className={`w-full bg-white p-4 rounded-xl text-xl font-black border border-gray-100 outline-none ${formData.country_code === 'PT' ? 'text-emerald-600' : 'text-red-500'}`} value={formData.country_code === 'PT' ? formData.iva_rate : formData.irpf_rate} onChange={e => {
+                             const v = Number(e.target.value);
+                             const key = (formData.country_code === 'PT' ? 'iva_rate' : 'irpf_rate') as any;
+                             setFormData({ ...(formData as any), [key]: Math.round(v * 100) / 100 });
+                           }} />
                         </div>
                       </div>
                       
@@ -695,11 +705,11 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                          <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-10 -mt-10 blur-2xl group-hover:bg-white/10 transition-all"></div>
                          <div>
                             <p className="text-[10px] font-black text-blue-200 uppercase tracking-widest leading-none mb-1 opacity-80 italic">Disponibilidade de Caixa (Líquido)</p>
-                            <p className="text-4xl font-black text-white italic leading-none">{calcs.symbol} {calcs.received.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                            <p className="text-4xl font-black text-white italic leading-none">{calcs.symbol} {calcs.received.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                          </div>
                          <div className="text-right">
                             <p className="text-[9px] font-black text-blue-200 uppercase opacity-60 italic">Custo Tributário Estimado</p>
-                            <p className="text-lg font-black text-bb-yellow italic leading-none">{calcs.symbol} {(Math.abs(calcs.tax1) + (formData.country_code === 'BR' ? Math.abs(calcs.tax2) : 0)).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+                            <p className="text-lg font-black text-bb-yellow italic leading-none">{calcs.symbol} {(Math.abs(calcs.tax1) + (formData.country_code === 'BR' ? Math.abs(calcs.tax2) : 0)).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
                          </div>
                       </div>
                    </div>
