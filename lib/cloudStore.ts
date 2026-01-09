@@ -184,6 +184,263 @@ export async function acceptHouseholdInvite(params: {
 
 
 
+
+
+/** -------------------- ADMIN (Sprint 7.3) -------------------- */
+
+export async function listHouseholdInvites(
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<HouseholdInvite[]> {
+  const colRef = collection(db, `${householdPath(householdId)}/invites`);
+  const snap = await getDocs(colRef);
+
+  const items: HouseholdInvite[] = snap.docs.map((d) => {
+    const data: any = d.data() as any;
+
+    const role: MemberRole =
+      data?.role === "ADMIN" || data?.role === "EDITOR" || data?.role === "LEITOR"
+        ? data.role
+        : "LEITOR";
+
+    const status: HouseholdInviteStatus =
+      data?.status === "pending" || data?.status === "accepted" || data?.status === "revoked"
+        ? data.status
+        : "pending";
+
+    const emailLower = String(data?.emailLower ?? d.id ?? "").toLowerCase();
+
+    return {
+      email: String(data?.email ?? emailLower),
+      emailLower,
+      role,
+      status,
+      createdAt: data?.createdAt,
+      createdBy: (data?.createdBy ?? null) as any,
+      acceptedAt: data?.acceptedAt,
+      acceptedByUid: (data?.acceptedByUid ?? null) as any,
+      revokedAt: data?.revokedAt,
+      revokedBy: (data?.revokedBy ?? null) as any,
+      updatedAt: data?.updatedAt,
+    };
+  });
+
+  items.sort((a, b) => String(a.emailLower || "").localeCompare(String(b.emailLower || "")));
+  return items;
+}
+
+export async function upsertHouseholdInvite(params: {
+  email: string;
+  role: MemberRole;
+  householdId?: string;
+  createdByUid?: string | null;
+}): Promise<void> {
+  const householdId = params.householdId ?? DEFAULT_HOUSEHOLD_ID;
+  const emailRaw = String(params.email ?? "").trim();
+  const emailLower = normalizeEmailLower(emailRaw);
+
+  if (!emailLower) throw new Error("MISSING_EMAIL");
+
+  const role: MemberRole =
+    params.role === "ADMIN" || params.role === "EDITOR" || params.role === "LEITOR"
+      ? params.role
+      : "LEITOR";
+
+  const inviteRef = doc(db, `${householdPath(householdId)}/invites/${emailLower}`);
+
+  await runTransaction(db, async (tx) => {
+    const now = Timestamp.now();
+    const existing = await tx.get(inviteRef);
+
+    if (existing.exists()) {
+      const data: any = existing.data() as any;
+      const status: HouseholdInviteStatus =
+        data?.status === "pending" || data?.status === "accepted" || data?.status === "revoked"
+          ? data.status
+          : "pending";
+
+      // Se já foi aceito, não recriar como pending (evita confusão).
+      if (status === "accepted") {
+        throw new Error("INVITE_ALREADY_ACCEPTED");
+      }
+
+      const createdAt = data?.createdAt ?? now;
+      const createdBy = (data?.createdBy ?? params.createdByUid ?? null) as any;
+
+      tx.set(
+        inviteRef,
+        {
+          email: emailRaw,
+          emailLower,
+          role,
+          status: "pending",
+          createdAt,
+          createdBy,
+          updatedAt: now,
+          revokedAt: null,
+          revokedBy: null,
+        },
+        { merge: true }
+      );
+      return;
+    }
+
+    tx.set(inviteRef, {
+      email: emailRaw,
+      emailLower,
+      role,
+      status: "pending",
+      createdAt: now,
+      createdBy: (params.createdByUid ?? null) as any,
+      updatedAt: now,
+    });
+  });
+}
+
+export async function revokeHouseholdInvite(params: {
+  email: string;
+  householdId?: string;
+  revokedByUid?: string | null;
+}): Promise<void> {
+  const householdId = params.householdId ?? DEFAULT_HOUSEHOLD_ID;
+  const emailLower = normalizeEmailLower(params.email);
+  if (!emailLower) throw new Error("MISSING_EMAIL");
+
+  const inviteRef = doc(db, `${householdPath(householdId)}/invites/${emailLower}`);
+
+  await runTransaction(db, async (tx) => {
+    const now = Timestamp.now();
+    const snap = await tx.get(inviteRef);
+    if (!snap.exists()) throw new Error("INVITE_NOT_FOUND");
+
+    const data: any = snap.data() as any;
+    const status: HouseholdInviteStatus =
+      data?.status === "pending" || data?.status === "accepted" || data?.status === "revoked"
+        ? data.status
+        : "pending";
+
+    if (status != "pending") throw new Error("INVITE_NOT_PENDING");
+
+    tx.update(inviteRef, {
+      status: "revoked",
+      revokedAt: now,
+      revokedBy: (params.revokedByUid ?? null) as any,
+      updatedAt: now,
+    });
+  });
+}
+
+export async function listHouseholdMembers(
+  householdId: string = DEFAULT_HOUSEHOLD_ID
+): Promise<HouseholdMember[]> {
+  const colRef = collection(db, `${householdPath(householdId)}/members`);
+  const snap = await getDocs(colRef);
+
+  const items: HouseholdMember[] = snap.docs.map((d) => {
+    const data: any = d.data() as any;
+
+    const role: MemberRole =
+      data?.role === "ADMIN" || data?.role === "EDITOR" || data?.role === "LEITOR"
+        ? data.role
+        : "LEITOR";
+
+    return {
+      uid: String(data?.uid ?? d.id),
+      householdId: String(data?.householdId ?? householdId),
+      role,
+      active: Boolean(data?.active),
+      email: (data?.email ?? null) as any,
+      name: (data?.name ?? null) as any,
+      createdAt: data?.createdAt,
+      updatedAt: data?.updatedAt,
+    };
+  });
+
+  // Ordena: ativos primeiro, depois role, depois e-mail
+  const roleRank = (r: MemberRole) => (r === "ADMIN" ? 0 : r === "EDITOR" ? 1 : 2);
+  items.sort((a, b) => {
+    const aa = a.active ? 0 : 1;
+    const bb = b.active ? 0 : 1;
+    if (aa != bb) return aa - bb;
+    const rr = roleRank(a.role) - roleRank(b.role);
+    if (rr != 0) return rr;
+    return String(a.email || a.uid).localeCompare(String(b.email || b.uid));
+  });
+
+  return items;
+}
+
+export async function updateHouseholdMember(params: {
+  uid: string;
+  householdId?: string;
+  role?: MemberRole;
+  active?: boolean;
+  updatedByUid?: string | null;
+}): Promise<void> {
+  const householdId = params.householdId ?? DEFAULT_HOUSEHOLD_ID;
+  const uid = String(params.uid ?? "").trim();
+  if (!uid) throw new Error("MISSING_UID");
+
+  // Referências (não usar query dentro de transaction; Firestore tx não suporta tx.get(query))
+  const memberRef = doc(db, "households", householdId, "members", uid);
+  const membersCol = collection(db, "households", householdId, "members");
+
+  // Leitura fora da transação para calcular próxima ação e validar LAST_ADMIN
+  const snap0 = await getDoc(memberRef);
+  if (!snap0.exists()) throw new Error("MEMBER_NOT_FOUND");
+
+  const current: any = snap0.data() as any;
+  const curRole: MemberRole =
+    current?.role === "ADMIN" || current?.role === "EDITOR" || current?.role === "LEITOR"
+      ? current.role
+      : "LEITOR";
+  const curActive = Boolean(current?.active);
+
+  const nextRole: MemberRole =
+    params.role === undefined
+      ? curRole
+      : params.role === "ADMIN" || params.role === "EDITOR" || params.role === "LEITOR"
+        ? params.role
+        : curRole;
+
+  const nextActive: boolean = params.active === undefined ? curActive : Boolean(params.active);
+
+  // Proteção: não deixar o household ficar sem ADMIN ativo
+  // (validação feita fora do tx para evitar tx.get(query).)
+  if (curActive && curRole === "ADMIN" && (!nextActive || nextRole !== "ADMIN")) {
+    const allSnap = await getDocs(membersCol);
+
+    let activeAdmins = 0;
+    for (const d of allSnap.docs) {
+      const data: any = d.data() as any;
+      const role: MemberRole =
+        data?.role === "ADMIN" || data?.role === "EDITOR" || data?.role === "LEITOR"
+          ? data.role
+          : "LEITOR";
+      const active = Boolean(data?.active);
+
+      const effRole = d.id === uid ? nextRole : role;
+      const effActive = d.id === uid ? nextActive : active;
+
+      if (effActive && effRole === "ADMIN") activeAdmins++;
+    }
+
+    if (activeAdmins < 1) throw new Error("LAST_ADMIN");
+  }
+
+  await runTransaction(db, async (tx) => {
+    const now = Timestamp.now();
+
+    const snap = await tx.get(memberRef);
+    if (!snap.exists()) throw new Error("MEMBER_NOT_FOUND");
+
+    tx.update(memberRef, {
+      role: nextRole,
+      active: nextActive,
+      updatedAt: now,
+      updatedBy: (params.updatedByUid ?? null) as any,
+    });
+  });
+}
 /**
  * Retorna o membership do usuário no household (ou null se não existir).
  * Sprint 7.1: invite-only → não criamos membership automaticamente aqui.
