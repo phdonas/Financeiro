@@ -677,27 +677,77 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                         <div className="flex-1 min-w-[140px] space-y-1.5">
                            <label className="text-[9px] font-black text-gray-400 uppercase ml-1 italic">Bruto Nominal</label>
                            <div className="relative">
-                              <input type="number" step="0.01" className="w-full bg-white p-4 rounded-xl text-xl font-black text-bb-blue border border-gray-100 outline-none focus:ring-2 focus:ring-bb-blue/20" value={formData.base_amount || ''} onChange={e => setFormData({...formData, base_amount: Number(e.target.value)})} />
+                              <input
+                              type="number"
+                              step="0.01"
+                              className="w-full bg-white p-4 rounded-xl text-xl font-black text-bb-blue border border-gray-100 outline-none focus:ring-2 focus:ring-bb-blue/20"
+                              value={
+                                formData.base_amount === undefined || formData.base_amount === null
+                                  ? ''
+                                  : Number(formData.base_amount).toFixed(2)
+                              }
+                              onChange={(e) => {
+                                const raw = e.target.value;
+                                setFormData({
+                                  ...formData,
+                                  base_amount:
+                                    raw === ''
+                                      ? undefined
+                                      : (() => {
+                                          const v = Math.round(parseFloat(raw) * 100) / 100;
+                                          return Number.isFinite(v) ? v : undefined;
+                                        })(),
+                                });
+                              }}
+                            />
                               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs opacity-30 italic">{calcs.symbol}</span>
                            </div>
                         </div>
                         <div className="text-gray-200 font-black text-xl select-none">➔</div>
                         <div className="flex-1 min-w-[140px] space-y-1.5">
                            <label className="text-[9px] font-black text-red-400 uppercase ml-1 italic">{calcs.tax1Label} %</label>
-                           <input type="number" step="0.01" className="w-full bg-white p-4 rounded-xl text-xl font-black text-red-500 border border-gray-100 outline-none" value={formData.country_code === 'PT' ? formData.irs_rate : formData.inss_rate} onChange={e => {
-                             const v = Number(e.target.value);
-                             const key = (formData.country_code === 'PT' ? 'irs_rate' : 'inss_rate') as any;
-                             setFormData({ ...(formData as any), [key]: Math.round(v * 100) / 100 });
-                           }} />
+                           <input
+                             type="number"
+                             step="0.01"
+                             className="w-full bg-white p-4 rounded-xl text-xl font-black text-red-500 border border-gray-100 outline-none"
+                             value={(() => {
+                               const val = formData.country_code === 'PT' ? formData.irs_rate : formData.inss_rate;
+                               return val === undefined || val === null ? '' : Number(val).toFixed(2);
+                             })()}
+                             onChange={(e) => {
+                               const raw = e.target.value;
+                               const key = (formData.country_code === 'PT' ? 'irs_rate' : 'inss_rate') as any;
+                               if (raw === '') {
+                                 setFormData({ ...(formData as any), [key]: undefined });
+                                 return;
+                               }
+                               const v = Math.round(parseFloat(raw) * 100) / 100;
+                               setFormData({ ...(formData as any), [key]: Number.isFinite(v) ? v : undefined });
+                             }}
+                           />
                         </div>
                         <div className="text-gray-200 font-black text-xl select-none">➔</div>
                         <div className="flex-1 min-w-[140px] space-y-1.5">
                            <label className={`text-[9px] font-black uppercase ml-1 italic ${formData.country_code === 'PT' ? 'text-emerald-500' : 'text-red-400'}`}>{calcs.tax2Label} %</label>
-                           <input type="number" step="0.01" className={`w-full bg-white p-4 rounded-xl text-xl font-black border border-gray-100 outline-none ${formData.country_code === 'PT' ? 'text-emerald-600' : 'text-red-500'}`} value={formData.country_code === 'PT' ? formData.iva_rate : formData.irpf_rate} onChange={e => {
-                             const v = Number(e.target.value);
-                             const key = (formData.country_code === 'PT' ? 'iva_rate' : 'irpf_rate') as any;
-                             setFormData({ ...(formData as any), [key]: Math.round(v * 100) / 100 });
-                           }} />
+                           <input
+                             type="number"
+                             step="0.01"
+                             className={`w-full bg-white p-4 rounded-xl text-xl font-black border border-gray-100 outline-none ${formData.country_code === 'PT' ? 'text-emerald-600' : 'text-red-500'}`}
+                             value={(() => {
+                               const val = formData.country_code === 'PT' ? formData.iva_rate : formData.irpf_rate;
+                               return val === undefined || val === null ? '' : Number(val).toFixed(2);
+                             })()}
+                             onChange={(e) => {
+                               const raw = e.target.value;
+                               const key = (formData.country_code === 'PT' ? 'iva_rate' : 'irpf_rate') as any;
+                               if (raw === '') {
+                                 setFormData({ ...(formData as any), [key]: undefined });
+                                 return;
+                               }
+                               const v = Math.round(parseFloat(raw) * 100) / 100;
+                               setFormData({ ...(formData as any), [key]: Number.isFinite(v) ? v : undefined });
+                             }}
+                           />
                         </div>
                       </div>
                       
