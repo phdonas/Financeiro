@@ -40,6 +40,8 @@ export interface Fornecedor {
 export interface Orcamento {
   id: string;
   categoria_id: string;
+  /** Opcional: quando preenchido, a meta é por Item/Conta dentro da categoria. */
+  conta_contabil_id?: string;
   ano: number;
   mes: number;
   valor_meta: number;
