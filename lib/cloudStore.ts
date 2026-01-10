@@ -29,6 +29,28 @@ function householdPath(householdId: string = DEFAULT_HOUSEHOLD_ID) {
   return `households/${householdId}`;
 }
 
+// Remove campos com valor undefined (Firestore não aceita undefined).
+// Faz strip profundo apenas em objetos "plain" e arrays; preserva Timestamps e outros objetos.
+function deepStripUndefined<T>(value: T): T {
+  if (value === undefined) return undefined as any;
+  if (value === null) return value;
+  if (Array.isArray(value)) {
+    return value.map((v) => deepStripUndefined(v)).filter((v) => v !== undefined) as any;
+  }
+  if (typeof value === "object") {
+    const proto = Object.getPrototypeOf(value);
+    const isPlain = proto === Object.prototype || proto === null;
+    if (!isPlain) return value;
+    const out: any = {};
+    for (const [k, v] of Object.entries(value as any)) {
+      const vv = deepStripUndefined(v);
+      if (vv !== undefined) out[k] = vv;
+    }
+    return out;
+  }
+  return value;
+}
+
 /** -------------------- MEMBERSHIP / ROLES -------------------- */
 
 export type MemberRole = "ADMIN" | "EDITOR" | "LEITOR";
@@ -565,7 +587,10 @@ export async function listHouseholdItems<T = any>(
   const col = collection(db, `${householdPath(householdId)}/${subcollection}`);
   const q = query(col, orderBy("updatedAt", "desc"), limit(500));
   const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as T[];
+  // IMPORTANTE: sempre manter o id do documento (d.id) como fonte da verdade.
+  // Alguns itens podem conter um campo "id" no payload que não corresponde ao docId
+  // (ex.: "id" vazio). Nesse caso, o spread não pode sobrescrever o docId.
+  return snap.docs.map((d) => ({ ...(d.data() as any), id: d.id })) as T[];
 }
 
 export async function upsertHouseholdItem<T extends { id?: string }>(
@@ -577,15 +602,13 @@ export async function upsertHouseholdItem<T extends { id?: string }>(
   const ref = item.id ? doc(col, item.id) : doc(col);
   const now = Timestamp.now();
 
-  await setDoc(
-    ref,
-    {
-      ...item,
-      updatedAt: now,
-      ...(item.id ? {} : { createdAt: now }),
-    },
-    { merge: true }
-  );
+  const payload = deepStripUndefined({
+    ...item,
+    updatedAt: now,
+    ...(item.id ? {} : { createdAt: now }),
+  });
+
+  await setDoc(ref, payload as any, { merge: true });
 
   return ref.id;
 }
