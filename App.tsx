@@ -17,6 +17,7 @@ import Investments from "./components/Investments";
 import TaxReports from "./components/TaxReports";
 import ImportExport from "./components/ImportExport";
 import Settings from "./components/Settings";
+import Admin from "./components/Admin";
 import InssBrasil from "./components/InssBrasil";
 
 import { auth, db } from "./lib/firebase";
@@ -1220,6 +1221,7 @@ const handleAcceptInvite = useCallback(async () => {
       investments: "Investimentos",
       taxes: "Cálculo de IVA",
       import: "Importar/Exportar",
+      admin: "Administração",
       settings: "Configurações",
     };
     return map[activeTab] ?? "FinanceFamily";
@@ -1327,6 +1329,8 @@ const handleAcceptInvite = useCallback(async () => {
             onDeleteInssConfig={onDeleteInssConfig}
           />
         );
+      case "admin":
+        return <Admin householdId={householdId} user={user} memberRole={memberRole as any} />;
       default:
         return <div className="p-6">Selecione uma opção no menu.</div>;
     }
@@ -1442,7 +1446,7 @@ const handleAcceptInvite = useCallback(async () => {
 
   return (
     <div className="min-h-screen flex bg-gray-50">
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} showAdmin={memberRole === "ADMIN"} />
 
       <div className="flex-1 flex flex-col min-w-0">
         <div className="bg-white border-b px-6 py-3 flex items-center justify-between gap-4">
