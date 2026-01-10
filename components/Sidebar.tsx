@@ -12,9 +12,6 @@ type SidebarProps = {
   // opcionais (se quiser mostrar no rodapé)
   userLabel?: string;
   modeLabel?: string;
-
-  // permissões
-  showAdmin?: boolean;
 };
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -24,7 +21,6 @@ const Sidebar: React.FC<SidebarProps> = ({
   onNavigate,
   userLabel = "Usuário",
   modeLabel = "Modo",
-  showAdmin = false,
 }) => {
   // Compatibilidade: pega o “ativo” de qualquer uma das props
   const current = activeTab ?? activePage ?? "dashboard";
@@ -39,14 +35,13 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const menuItems = [
     { id: "dashboard", label: "Painel Geral", icon: "🏠" },
-    { id: "ledger", label: "Lançamentos", icon: "📑" },
+{ id: "ledger", label: "Lançamentos", icon: "📑" },
     { id: "calendar", label: "Agenda Financeira", icon: "📅" },
     { id: "inss", label: "INSS Brasil", icon: "🇧🇷" },
     { id: "receipts", label: "Meus Recibos", icon: "🧾" },
     { id: "investments", label: "Investimentos", icon: "📈" },
     { id: "taxes", label: "Cálculo de IVA", icon: "⚖️" },
     { id: "import", label: "Importar/Exportar", icon: "📥" },
-    ...(showAdmin ? [{ id: "admin", label: "Administração", icon: "🛡️" }] : []),
     { id: "settings", label: "Configurações", icon: "⚙️" },
   ];
 
