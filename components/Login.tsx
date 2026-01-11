@@ -1,8 +1,11 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { auth, googleProvider } from "../lib/firebase";
 import {
+  browserSessionPersistence,
+  setPersistence,
   signInWithEmailAndPassword,
-  signInWithPopup
+  signInWithPopup,
+  signInWithRedirect
 } from "firebase/auth";
 
 const Login: React.FC = () => {
@@ -11,14 +14,41 @@ const Login: React.FC = () => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  useEffect(() => {
+    // Evita persistência longa e melhora previsibilidade em navegação privada/aba anônima
+    setPersistence(auth, browserSessionPersistence).catch((err) => {
+      console.warn('Falha ao configurar persistence do Auth:', err);
+    });
+  }, []);
+
+  const mapAuthError = (err: any): string => {
+    const code = String(err?.code ?? '');
+    if (code.includes('auth/invalid-credential') || code.includes('auth/wrong-password')) return 'Acesso negado. Verifique e-mail e senha.';
+    if (code.includes('auth/user-not-found')) return 'Usuário não encontrado. Verifique o e-mail.';
+    if (code.includes('auth/too-many-requests')) return 'Muitas tentativas. Aguarde alguns minutos e tente novamente.';
+    if (code.includes('auth/network-request-failed')) return 'Falha de rede. Verifique sua conexão e tente novamente.';
+    if (code.includes('auth/operation-not-allowed')) return 'Método de login não habilitado no Firebase (operation-not-allowed).';
+    return 'Não foi possível autenticar. Tente novamente.';
+  };
+
   const handleGoogle = async () => {
     setLoading(true);
     setError("");
     try {
       await signInWithPopup(auth, googleProvider);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Não foi possível entrar com Google. Tente novamente.");
+      const code = String(err?.code ?? "");
+      // Em alguns browsers/aba anônima o popup é bloqueado: fallback para redirect
+      if (code.includes("auth/popup") || code.includes("popup")) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (err2) {
+          console.error(err2);
+        }
+      }
+      setError(mapAuthError(err));
     } finally {
       setLoading(false);
     }
@@ -30,9 +60,9 @@ const Login: React.FC = () => {
     setError("");
     try {
       await signInWithEmailAndPassword(auth, email, password);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Acesso negado. Verifique e-mail e senha.");
+      setError(mapAuthError(err));
     } finally {
       setLoading(false);
     }
