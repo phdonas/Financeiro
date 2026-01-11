@@ -20,6 +20,16 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
   const [toMonth, setToMonth] = useState<string>('');
   const [toYear, setToYear] = useState<string>('');
 
+  // R0.3: manter seleção local para atualizar contador imediatamente (mesmo com filtros ativos)
+  const [markedMap, setMarkedMap] = useState<Record<string, boolean>>({});
+
+  const getMarkedFlag = (rec: InssRecord): boolean => {
+    const id = String((rec as any)?.id ?? '').trim();
+    if (id && Object.prototype.hasOwnProperty.call(markedMap, id)) return Boolean(markedMap[id]);
+    return Boolean((rec as any)?.lancar_no_ledger);
+  };
+
+
   const initialForm: Partial<InssRecord> = {
     quem: 'Paulo',
     competencia: new Date().toISOString().substring(0, 7),
@@ -95,15 +105,26 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
 
     return { valor, salario_base };
   };
+  const markedToLedger = useMemo(() => {
+    return (records || []).filter((r) => getMarkedFlag(r));
+  }, [records, markedMap]);
 
-  const pendingToLedger = useMemo(() => {
-    return records.filter((r) => Boolean((r as any).lancar_no_ledger) && !String((r as any).transacao_id ?? "").trim());
-  }, [records]);
+  const insertableToLedger = useMemo(() => {
+    return (markedToLedger || []).filter((r) => {
+      const hasTx = String((r as any).transacao_id ?? '').trim().length > 0;
+      return !hasTx;
+    });
+  }, [markedToLedger]);
 
   const handleInsertMarkedToLedger = async () => {
-    const list = pendingToLedger;
+    const marked = markedToLedger;
+    const list = insertableToLedger;
+    if (marked.length === 0) {
+      alert("Nenhum registro selecionado para o Ledger.");
+      return;
+    }
     if (list.length === 0) {
-      alert("Nenhum registro marcado para inserir no Ledger.");
+      alert("Os registros selecionados já possuem transação vinculada no Ledger (nada para inserir).");
       return;
     }
 
@@ -120,7 +141,17 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
       });
     }
 
-    alert(`Inseridos no Ledger: ${list.length} registros.`);
+    setMarkedMap((prev) => {
+      const next: Record<string, boolean> = { ...prev };
+      for (const rec of list) {
+        const id = String((rec as any)?.id ?? '').trim();
+        if (id) delete next[id];
+      }
+      return next;
+    });
+
+    const skipped = marked.length - list.length;
+    alert(`Inseridos no Ledger: ${list.length} registros.` + (skipped > 0 ? ` (${skipped} já estavam no Ledger)` : ""));
   };
 
   const [formData, setFormData] = useState<Partial<InssRecord>>(initialForm);
@@ -348,7 +379,7 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
               <p className="text-[10px] text-gray-400 font-bold uppercase mt-1 italic tracking-widest">Auditoria de Parcelas GPS/NIT</p>
            </div>
            <button onClick={() => { setEditingId(null); setFormData(initialForm); setIsModalOpen(true); }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-widest shadow-lg hover:scale-105 active:scale-95 transition-all">📅 Lançar Guia GPS</button>
-           <button onClick={handleInsertMarkedToLedger} className="px-8 py-4 bg-gray-900 text-white font-black italic uppercase tracking-wider rounded-[1.5rem] hover:bg-gray-800 active:scale-95 transition-all">📤 Inserir no Ledger ({pendingToLedger.length})</button>
+           <button onClick={handleInsertMarkedToLedger} className="px-8 py-4 bg-gray-900 text-white font-black italic uppercase tracking-wider rounded-[1.5rem] hover:bg-gray-800 active:scale-95 transition-all">📤 Inserir no Ledger ({insertableToLedger.length}/{markedToLedger.length})</button>
         </div>
 
         <div className="px-8 py-6 border-b border-gray-50 bg-gray-50/30">
@@ -457,13 +488,23 @@ const InssBrasil: React.FC<InssBrasilProps> = ({ records, configs, onSave, onDel
                     <td className="px-8 py-4 text-center">
                       <input
                         type="checkbox"
-                        checked={Boolean((rec as any).lancar_no_ledger)}
-                        onChange={(e) =>
-                          onPatch({
-                            ...rec,
-                            lancar_no_ledger: e.target.checked,
-                          } as any)
-                        }
+                        checked={getMarkedFlag(rec)}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          const id = String((rec as any)?.id ?? '').trim();
+                          const prevVal = Boolean((rec as any)?.lancar_no_ledger);
+                          if (id) setMarkedMap((p) => ({ ...p, [id]: checked }));
+                          Promise.resolve(
+                            onPatch({
+                              ...rec,
+                              lancar_no_ledger: checked,
+                            } as any)
+                          ).catch((err) => {
+                            console.error(err);
+                            alert('Falha ao atualizar a marcação (lancar_no_ledger).');
+                            if (id) setMarkedMap((p) => ({ ...p, [id]: prevVal }));
+                          });
+                        }}
                       />
                     </td>
 
