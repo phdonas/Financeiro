@@ -369,7 +369,7 @@ export async function listHouseholdMembers(
       uid: String(data?.uid ?? d.id),
       householdId: String(data?.householdId ?? householdId),
       role,
-      active: Boolean(data?.active),
+      active: (data?.active === undefined ? true : Boolean(data.active)),
       email: (data?.email ?? null) as any,
       name: (data?.name ?? null) as any,
       createdAt: data?.createdAt,
@@ -415,7 +415,7 @@ export async function updateHouseholdMember(params: {
     current?.role === "ADMIN" || current?.role === "EDITOR" || current?.role === "LEITOR"
       ? current.role
       : "LEITOR";
-  const curActive = Boolean(current?.active);
+  const curActive = (current?.active === undefined ? true : Boolean(current.active));
 
   const nextRole: MemberRole =
     params.role === undefined
@@ -438,7 +438,7 @@ export async function updateHouseholdMember(params: {
         data?.role === "ADMIN" || data?.role === "EDITOR" || data?.role === "LEITOR"
           ? data.role
           : "LEITOR";
-      const active = Boolean(data?.active);
+      const active = (data?.active === undefined ? true : Boolean(data.active));
 
       const effRole = d.id === uid ? nextRole : role;
       const effActive = d.id === uid ? nextActive : active;
@@ -486,7 +486,7 @@ export async function getHouseholdMember(
     uid: String(data?.uid ?? uid),
     householdId: String(data?.householdId ?? householdId),
     role,
-    active: Boolean(data?.active),
+    active: (data?.active === undefined ? true : Boolean(data.active)),
     email: (data?.email ?? null) as any,
     name: (data?.name ?? null) as any,
     createdAt: data?.createdAt,
