@@ -216,6 +216,56 @@ const Receipts: React.FC<ReceiptsProps> = ({ viewMode, receipts, fornecedores, c
   };
 const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
 
+  // Entrada monetária (Bruto Nominal): usar string controlada para aceitar vírgula/ponto,
+  // e só normalizar para número (2 casas) sem “travar” a digitação.
+  const [baseAmountInput, setBaseAmountInput] = useState<string>(() => {
+    const v = initialForm.base_amount;
+    return typeof v === 'number' && Number.isFinite(v)
+      ? v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : '';
+  });
+
+  const formatMoneyPT = (v: number): string =>
+    v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const parseMoneyAny = (raw: string): number | undefined => {
+    const s0 = String(raw ?? '').trim();
+    if (!s0) return undefined;
+
+    // mantém apenas dígitos, separadores e sinal
+    let s = s0.replace(/[^\d.,-]/g, '');
+    if (!s) return undefined;
+
+    // determina separador decimal como o ÚLTIMO entre ',' e '.'
+    const lastComma = s.lastIndexOf(',');
+    const lastDot = s.lastIndexOf('.');
+    let decSep: ',' | '.' | null = null;
+    if (lastComma > -1 && lastDot > -1) decSep = lastComma > lastDot ? ',' : '.';
+    else if (lastComma > -1) decSep = ',';
+    else if (lastDot > -1) decSep = '.';
+
+    if (decSep) {
+      const parts = s.split(decSep);
+      const frac = parts.pop() ?? '';
+      const intPart = parts.join('').replace(/[.,]/g, '');
+      s = `${intPart}.${frac}`;
+    } else {
+      // sem separador decimal: remove milhares
+      s = s.replace(/[.,]/g, '');
+    }
+
+    const n = parseFloat(s);
+    if (!Number.isFinite(n)) return undefined;
+    // arredonda para 2 casas
+    return Math.round(n * 100) / 100;
+  };
+
+  const setBaseAmountFromRaw = (raw: string) => {
+    setBaseAmountInput(raw);
+    const parsed = parseMoneyAny(raw);
+    setFormData((prev) => ({ ...prev, base_amount: raw === '' ? undefined : parsed }));
+  };
+
   const calcs = useMemo(() => {
     const base = formData.base_amount || 0;
     if (formData.country_code === 'PT') {
@@ -309,7 +359,7 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
 
     try {
       await Promise.resolve(onSaveReceipt(finalReceipt));
-      setIsModalOpen(false); setEditingId(null); setFormData(initialForm);
+      setIsModalOpen(false); setEditingId(null); setFormData(initialForm); setBaseAmountInput(formatMoneyPT(Number(initialForm.base_amount || 0)));
     } catch (err) {
       console.error('Falha ao salvar recibo:', err);
       alert('Falha ao salvar o recibo. Veja o Console (DevTools) para detalhes.');
@@ -449,6 +499,7 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
               const c = (initialForm.country_code || 'PT') as 'PT' | 'BR';
               const defaultBank = getDefaultBankId(c);
               setFormData({ ...initialForm, forma_pagamento_id: defaultBank });
+              setBaseAmountInput(formatMoneyPT(Number((initialForm.base_amount ?? 0) as any)));
               setEditingId(null);
               setIsModalOpen(true);
             }}
@@ -510,7 +561,7 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                         {r.document_url && (
                           <a href={r.document_url} target="_blank" rel="noreferrer" className="w-8 h-8 bg-gray-50 text-gray-400 rounded-lg flex items-center justify-center border border-gray-100 hover:bg-bb-blue hover:text-white transition-all">🔗</a>
                         )}
-                        <button onClick={() => { setEditingId(r.internal_id); setFormData(r); setIsModalOpen(true); }} className="w-8 h-8 bg-bb-blue text-white rounded-lg flex items-center justify-center shadow-md">✏️</button>
+                        <button onClick={() => { setEditingId(r.internal_id); setFormData(r); setBaseAmountInput(typeof (r as any).base_amount === 'number' ? formatMoneyPT((r as any).base_amount) : ''); setIsModalOpen(true); }} className="w-8 h-8 bg-bb-blue text-white rounded-lg flex items-center justify-center shadow-md">✏️</button>
                         <button onClick={() => handleDelete(r.internal_id)} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100 transition-all">✕</button>
                       </div>
                     </td>
@@ -678,26 +729,21 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                            <label className="text-[9px] font-black text-gray-400 uppercase ml-1 italic">Bruto Nominal</label>
                            <div className="relative">
                               <input
-                              type="number"
-                              step="0.01"
+                              type="text"
+                              inputMode="decimal"
+                              placeholder="0,00"
                               className="w-full bg-white p-4 rounded-xl text-xl font-black text-bb-blue border border-gray-100 outline-none focus:ring-2 focus:ring-bb-blue/20"
-                              value={
-                                formData.base_amount === undefined || formData.base_amount === null
-                                  ? ''
-                                  : Number(formData.base_amount).toFixed(2)
-                              }
-                              onChange={(e) => {
-                                const raw = e.target.value;
-                                setFormData({
-                                  ...formData,
-                                  base_amount:
-                                    raw === ''
-                                      ? undefined
-                                      : (() => {
-                                          const v = Math.round(parseFloat(raw) * 100) / 100;
-                                          return Number.isFinite(v) ? v : undefined;
-                                        })(),
-                                });
+                              value={baseAmountInput}
+                              onChange={(e) => setBaseAmountFromRaw(e.target.value)}
+                              onBlur={() => {
+                                const parsed = parseMoneyAny(baseAmountInput);
+                                if (parsed === undefined) {
+                                  setBaseAmountInput('');
+                                  setFormData((prev) => ({ ...prev, base_amount: undefined }));
+                                  return;
+                                }
+                                setBaseAmountInput(formatMoneyPT(parsed));
+                                setFormData((prev) => ({ ...prev, base_amount: parsed }));
                               }}
                             />
                               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs opacity-30 italic">{calcs.symbol}</span>
