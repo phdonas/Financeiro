@@ -74,6 +74,10 @@ function addDays(d: Date, days: number) {
   return nd;
 }
 
+function isPago(status?: string) {
+  return status === "PAGO";
+}
+
 function createIcsAllDayEvent(args: {
   uid: string;
   summary: string;
@@ -185,6 +189,10 @@ export default function Calendar({ transacoes, inssRecords = [], householdId }: 
     // ordena: receitas primeiro? No Google não, mas fica melhor: despesas e receitas misturadas.
     for (const [k, arr] of map.entries()) {
       arr.sort((a, b) => {
+        const aPago = isPago(a.status);
+        const bPago = isPago(b.status);
+        if (aPago !== bPago) return aPago ? 1 : -1; // NÃO pagos primeiro
+
         const aIsRec = a.tipo === TipoTransacao.RECEITA;
         const bIsRec = b.tipo === TipoTransacao.RECEITA;
         if (aIsRec !== bIsRec) return aIsRec ? -1 : 1;
@@ -203,6 +211,17 @@ export default function Calendar({ transacoes, inssRecords = [], householdId }: 
       const k = dateKey(d);
       const arr = map.get(k) || [];
       arr.push(r);
+      map.set(k, arr);
+    }
+
+    // Ordenação dentro do dia: NÃO pagos primeiro
+    for (const [k, arr] of map.entries()) {
+      arr.sort((a, b) => {
+        const aPago = isPago(a.status);
+        const bPago = isPago(b.status);
+        if (aPago !== bPago) return aPago ? 1 : -1;
+        return (a.numero_parcela || 0) - (b.numero_parcela || 0);
+      });
       map.set(k, arr);
     }
     return map;
@@ -395,6 +414,8 @@ export default function Calendar({ transacoes, inssRecords = [], householdId }: 
     },
     itemRec: { background: "rgba(46, 160, 67, 0.12)", color: "#1a7f37" },
     itemDesp: { background: "rgba(248, 81, 73, 0.12)", color: "#cf222e" },
+    itemRecPaid: { background: "rgba(9, 105, 218, 0.10)", color: "#0969da" },
+    itemDespPaid: { background: "rgba(217, 119, 6, 0.14)", color: "#b45309" },
     itemAux: { background: "rgba(9, 105, 218, 0.10)", color: "#0969da" },
     more: { fontSize: 12, color: "#57606a", paddingLeft: 4 },
     modalOverlay: {
@@ -513,9 +534,19 @@ export default function Calendar({ transacoes, inssRecords = [], householdId }: 
             ...inssToShow.map((r) => ({ kind: "inss" as const, r })),
           ];
 
+          // Visual: manter NÃO pagos sempre no início da lista do dia (tx + INSS)
+          const mergedSorted = [...merged].sort((a, b) => {
+            const aPago = a.kind === "tx" ? isPago(a.t.status) : isPago(a.r.status);
+            const bPago = b.kind === "tx" ? isPago(b.t.status) : isPago(b.r.status);
+            if (aPago !== bPago) return aPago ? 1 : -1;
+            // empate: mantém tx antes de INSS
+            if (a.kind !== b.kind) return a.kind === "tx" ? -1 : 1;
+            return 0;
+          });
+
           const maxLines = 4;
-          const visible = merged.slice(0, maxLines);
-          const remaining = merged.length - visible.length;
+          const visible = mergedSorted.slice(0, maxLines);
+          const remaining = mergedSorted.length - visible.length;
 
           const isToday = isSameDay(d, today);
 
@@ -543,7 +574,13 @@ export default function Calendar({ transacoes, inssRecords = [], householdId }: 
                         key={`tx-${t.id}-${idx}`}
                         style={{
                           ...styles.item,
-                          ...(isRec ? styles.itemRec : styles.itemDesp),
+                          ...(isRec
+                            ? isPago(t.status)
+                              ? styles.itemRecPaid
+                              : styles.itemRec
+                            : isPago(t.status)
+                            ? styles.itemDespPaid
+                            : styles.itemDesp),
                         }}
                       >
                         {text}
@@ -555,7 +592,7 @@ export default function Calendar({ transacoes, inssRecords = [], householdId }: 
                   const money = formatMoney(Number(r.valor || 0), "BR");
                   const text = `INSS ${r.quem} ${money}`;
                   return (
-                    <div key={`inss-${r.id}-${idx}`} style={{ ...styles.item, ...styles.itemDesp }}>
+                    <div key={`inss-${r.id}-${idx}`} style={{ ...styles.item, ...(isPago(r.status) ? styles.itemDespPaid : styles.itemDesp) }}>
                       {text}
                     </div>
                   );
@@ -589,37 +626,64 @@ export default function Calendar({ transacoes, inssRecords = [], householdId }: 
                 <div style={{ color: "#57606a" }}>Sem lançamentos neste dia.</div>
               )}
 
-              {dayDetails.tx.map((t) => {
-                const isRec = t.tipo === TipoTransacao.RECEITA;
-                const money = formatMoney(Number(t.valor || 0), t.codigo_pais);
-                return (
-                  <div key={t.id} style={styles.listRow}>
-                    <div style={styles.listLeft}>
-                      <div style={styles.listTitle}>{t.description}</div>
-                      <div style={styles.listMeta}>
-                        {t.codigo_pais} • {t.tipo} • {t.status}
-                      </div>
-                    </div>
-                    <div style={{ ...styles.listValue, color: isRec ? "#1a7f37" : "#cf222e" }}>
-                      {money}
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* INSS sem transação vinculada */}
               {(() => {
+                // Lista única (tx + INSS) com NÃO pagos primeiro
                 const ids = new Set(dayDetails.tx.map((t) => t.id));
-                const list = dayDetails.inss.filter((r) => !r.transacao_id || !ids.has(r.transacao_id));
-                return list.map((r) => {
+                const inssList = dayDetails.inss.filter(
+                  (r) => !r.transacao_id || !ids.has(r.transacao_id)
+                );
+
+                const combined = [
+                  ...dayDetails.tx.map((t) => ({ kind: "tx" as const, t })),
+                  ...inssList.map((r) => ({ kind: "inss" as const, r })),
+                ].sort((a, b) => {
+                  const aPago = a.kind === "tx" ? isPago(a.t.status) : isPago(a.r.status);
+                  const bPago = b.kind === "tx" ? isPago(b.t.status) : isPago(b.r.status);
+                  if (aPago !== bPago) return aPago ? 1 : -1; // NÃO pagos primeiro
+                  if (a.kind !== b.kind) return a.kind === "tx" ? -1 : 1; // tx antes de INSS
+                  return 0;
+                });
+
+                return combined.map((it) => {
+                  if (it.kind === "tx") {
+                    const t = it.t;
+                    const isRec = t.tipo === TipoTransacao.RECEITA;
+                    const pago = isPago(t.status);
+                    const money = formatMoney(Number(t.valor || 0), t.codigo_pais);
+
+                    const color = isRec
+                      ? pago
+                        ? "#0969da" // receita paga = azul claro
+                        : "#1a7f37" // receita não paga = verde
+                      : pago
+                      ? "#b45309" // despesa paga = laranja claro
+                      : "#cf222e"; // despesa não paga = vermelho
+
+                    return (
+                      <div key={`tx-${t.id}`} style={styles.listRow}>
+                        <div style={styles.listLeft}>
+                          <div style={styles.listTitle}>{t.description}</div>
+                          <div style={styles.listMeta}>
+                            {t.codigo_pais} • {t.tipo} • {t.status}
+                          </div>
+                        </div>
+                        <div style={{ ...styles.listValue, color }}>{money}</div>
+                      </div>
+                    );
+                  }
+
+                  const r = it.r;
+                  const pago = isPago(r.status);
                   const money = formatMoney(Number(r.valor || 0), "BR");
+                  const color = pago ? "#b45309" : "#cf222e";
+
                   return (
-                    <div key={r.id} style={styles.listRow}>
+                    <div key={`inss-${r.id}`} style={styles.listRow}>
                       <div style={styles.listLeft}>
                         <div style={styles.listTitle}>{`INSS ${r.quem} Parc ${r.numero_parcela}`}</div>
                         <div style={styles.listMeta}>{`BR • ${r.status} • Comp ${r.competencia}`}</div>
                       </div>
-                      <div style={{ ...styles.listValue, color: "#cf222e" }}>{money}</div>
+                      <div style={{ ...styles.listValue, color }}>{money}</div>
                     </div>
                   );
                 });
