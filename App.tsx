@@ -1319,7 +1319,17 @@ const handleAcceptInvite = useCallback(async () => {
           />
         );
       case "taxes":
-        return <TaxReports receipts={receipts} viewMode={viewMode} />;
+        return (
+         <TaxReports
+            receipts={receipts}
+            viewMode={viewMode}
+            fornecedores={fornecedores}
+            formasPagamento={formasPagamento}
+            onSaveTx={onSaveTransacao}
+            isCloud={isCloud}
+            householdId={householdId}
+          />
+        );
       case "import":
         return (
           <ImportExport
