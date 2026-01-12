@@ -37,6 +37,7 @@ const Ledger: React.FC<LedgerProps> = ({
   const [monthFilter, setMonthFilter] = useState<number>(() => new Date().getMonth() + 1);
   const [yearFilter, setYearFilter] = useState<number>(() => new Date().getFullYear());
   const [dateRegime, setDateRegime] = useState<'COMPETENCIA' | 'CAIXA'>('COMPETENCIA');
+  const [sortMode, setSortMode] = useState<'VENCIMENTO' | 'CATEGORIA' | 'DATA'>('VENCIMENTO');
   // Sprint 2.6: persistência de filtros + paginação incremental (evita travar com listas grandes)
   const PAGE_SIZE = 20;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
@@ -136,7 +137,9 @@ const fetchCloudPage = useCallback(
         householdId: effectiveHouseholdId,
         viewMode,
         pageSize,
-        periodRange,
+        startDate: periodRange?.startDate,
+        endDate: periodRange?.endDate,
+        dateField: dateRegime === 'CAIXA' ? 'data_prevista_pagamento' : 'data_competencia',
         cursor,
       });
 
@@ -168,7 +171,7 @@ const fetchCloudPage = useCallback(
       setCloudLoading(false);
     }
   },
-  [isCloud, effectiveHouseholdId, viewMode, pageSize, periodRange]
+  [isCloud, effectiveHouseholdId, viewMode, pageSize, periodRange, dateRegime]
 );
 
 
@@ -182,7 +185,7 @@ useEffect(() => {
   setCloudHasMore(true);
   setCloudTxs([]);
   fetchCloudPage({ reset: true, cursor: null });
-}, [isCloud, effectiveHouseholdId, viewMode, monthFilter, yearFilter, pageSize, periodRange, refreshToken]);
+}, [isCloud, effectiveHouseholdId, viewMode, monthFilter, yearFilter, pageSize, periodRange, dateRegime, refreshToken]);
 
 
   const parseYearMonth = (dateStr?: string) => {
@@ -515,26 +518,66 @@ useEffect(() => {
       return matchCountry && matchCat && matchYear && matchMonth;
     });
 
-    const safeDateKey = (t: Transacao) => {
-      const primary = dateRegime === 'CAIXA' ? t?.data_prevista_pagamento : t?.data_competencia;
-      const fallback = dateRegime === 'CAIXA' ? t?.data_competencia : t?.data_prevista_pagamento;
-      return ((primary || fallback || '') as any).toString();
-    };
+    const catMap = new Map<string, string>();
+(Array.isArray(categorias) ? categorias : []).forEach((c) => {
+  if (c?.id) catMap.set(c.id, String((c as any).nome ?? (c as any).name ?? ''));
+});
 
-    // Ordenação desc por string ISO. Datas vazias/invalidas vão para o fim.
-    return filtered.sort((a, b) => {
-      const da = safeDateKey(a);
-      const db = safeDateKey(b);
-      if (!da && !db) return 0;
-      if (!da) return 1;
-      if (!db) return -1;
-      try {
-        return db.localeCompare(da);
-      } catch {
-        return 0;
-      }
+const dateKeyFrom = (raw: any) => {
+  const s = (raw ?? '').toString().trim();
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  if (!isNaN(d.getTime())) {
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const da = String(d.getDate()).padStart(2, '0');
+    return `${y}-${mo}-${da}`;
+  }
+  return '';
+};
+
+const vencimentoKey = (t: Transacao) =>
+  dateKeyFrom((t as any)?.data_prevista_pagamento || (t as any)?.data_competencia || '');
+
+const dataKey = (t: Transacao) => {
+  const primary = dateRegime === 'CAIXA' ? (t as any)?.data_prevista_pagamento : (t as any)?.data_competencia;
+  const fallback = dateRegime === 'CAIXA' ? (t as any)?.data_competencia : (t as any)?.data_prevista_pagamento;
+  return dateKeyFrom(primary || fallback || '');
+};
+
+// Ordenação padrão: Vencimento desc (mais recente primeiro)
+return filtered.sort((a, b) => {
+  if (sortMode === 'CATEGORIA') {
+    const ca = (catMap.get(a.categoria_id) || '').toLowerCase();
+    const cb = (catMap.get(b.categoria_id) || '').toLowerCase();
+    if (ca !== cb) return ca.localeCompare(cb);
+
+    const da = vencimentoKey(a);
+    const db = vencimentoKey(b);
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    return db.localeCompare(da);
+  }
+
+  if (sortMode === 'DATA') {
+    const da = dataKey(a);
+    const db = dataKey(b);
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    return db.localeCompare(da);
+  }
+
+  // VENCIMENTO
+  const da = vencimentoKey(a);
+  const db = vencimentoKey(b);
+  if (!da && !db) return 0;
+  if (!da) return 1;
+  if (!db) return -1;
+  return db.localeCompare(da);
     });
-  }, [isCloud, cloudTxs, transacoes, viewMode, catFilter, monthFilter, yearFilter, dateRegime]);
+  }, [isCloud, cloudTxs, transacoes, categorias, viewMode, catFilter, monthFilter, yearFilter, dateRegime, sortMode]);
 
 
   // Sprint 2.6: maps para evitar .find() por linha (performance)
@@ -612,7 +655,7 @@ const handleLoadMore = () => {
   };
 
   return (
-    <div className="p-6 space-y-6 pb-24 animate-in fade-in duration-500">
+    <div className="p-6 space-y-4 pb-24 animate-in fade-in duration-500">
       {/* Resumo Rápido PHD */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm">
@@ -673,6 +716,17 @@ const handleLoadMore = () => {
              <option value="COMPETENCIA">Competência</option>
              <option value="CAIXA">Caixa (Pagamento)</option>
            </select>
+
+<select
+  className="bg-gray-50 p-3 rounded-xl text-[10px] font-black text-bb-blue uppercase italic tracking-widest border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+  value={sortMode}
+  onChange={(e) => setSortMode(e.target.value as any)}
+  title="Ordenação"
+>
+  <option value="VENCIMENTO">Vencimento (desc)</option>
+  <option value="CATEGORIA">Categoria (A–Z)</option>
+  <option value="DATA">Data ({dateRegime === 'CAIXA' ? 'Caixa' : 'Competência'})</option>
+</select>
         </div>
         <button onClick={() => {
           const today = new Date();
@@ -750,7 +804,10 @@ const handleLoadMore = () => {
                       >
                         ✏️
                       </button>
-                      <button onClick={() => onDelete(t.id)} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100">✕</button>
+                      <button onClick={() => {
+                          if (!window.confirm('Confirma excluir este lançamento?')) return;
+                          onDelete(t.id);
+                        }} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100">✕</button>
                     </div>
                   </td>
                 </tr>
@@ -798,8 +855,8 @@ const handleLoadMore = () => {
 
       {isModalOpen && (
         <div className="fixed inset-0 bg-bb-blue/70 backdrop-blur-md z-50 flex items-center justify-center p-4">
-          <form onSubmit={handleSave} className="bg-white rounded-[2rem] shadow-2xl w-full max-w-6xl p-10 space-y-8 animate-in zoom-in duration-300 overflow-y-auto max-h-[95vh] scrollbar-hide">
-             <div className="flex justify-between items-start border-b border-gray-100 pb-6">
+          <form onSubmit={handleSave} className="bg-white rounded-[2rem] shadow-2xl w-full max-w-6xl p-6 space-y-5 animate-in zoom-in duration-300 overflow-y-auto max-h-[95vh] scrollbar-hide">
+             <div className="flex justify-between items-start border-b border-gray-100 pb-4">
                <div>
                  <h3 className="text-2xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Registro de Fluxo PHD</h3>
                  <p className="text-[10px] text-gray-400 font-bold uppercase mt-2 italic tracking-widest">Mapeamento Contábil e Recorrência</p>
@@ -807,16 +864,16 @@ const handleLoadMore = () => {
                <button type="button" onClick={() => setIsModalOpen(false)} className="bg-gray-50 w-10 h-10 rounded-full flex items-center justify-center text-gray-300 hover:text-red-500 transition-all border border-gray-100">✕</button>
              </div>
              
-             <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-                <div className="lg:col-span-7 space-y-6">
+             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div className="lg:col-span-7 space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Data Competência</label>
-                          <input type="date" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.data_competencia} onChange={e => setFormData({...formData, data_competencia: e.target.value})} />
+                          <input type="date" required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.data_competencia} onChange={e => setFormData({...formData, data_competencia: e.target.value})} />
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Data Pagamento</label>
-                          <input type="date" required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.data_prevista_pagamento} onChange={e => setFormData({...formData, data_prevista_pagamento: e.target.value})} />
+                          <input type="date" required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.data_prevista_pagamento} onChange={e => setFormData({...formData, data_prevista_pagamento: e.target.value})} />
                         </div>
                     </div>
 
@@ -830,24 +887,24 @@ const handleLoadMore = () => {
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Banco / Conta</label>
-                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione banco...</option>{formasPagamento.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
+                          <select required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione banco...</option>{formasPagamento.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
                         </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Categoria</label>
-                          <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione...</option>{categorias.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
+                          <select required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione...</option>{categorias.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Item Específico</label>
-			                  <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.conta_contabil_id} onChange={e => setFormData({...formData, conta_contabil_id: e.target.value})}><option value="">Selecione...</option>{contasDaCategoriaSelecionada.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}</select>
+			                  <select required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.conta_contabil_id} onChange={e => setFormData({...formData, conta_contabil_id: e.target.value})}><option value="">Selecione...</option>{contasDaCategoriaSelecionada.map((i) => <option key={i.id} value={i.id}>{i.nome}</option>)}</select>
                         </div>
                     </div>
 
                     <div className="space-y-1.5">
                       <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Identificador (Descrição)</label>
-                      <input required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} placeholder="Ex: Aluguel Fevereiro..." />
+                      <input required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} placeholder="Ex: Aluguel Fevereiro..." />
                     </div>
 
                     <div className="space-y-1.5">
@@ -859,8 +916,8 @@ const handleLoadMore = () => {
                     </div>
                 </div>
                 
-                <div className="lg:col-span-5 space-y-6">
-                    <div className="bg-gray-50/50 p-6 rounded-[1.5rem] border border-gray-100 space-y-6">
+                <div className="lg:col-span-5 space-y-4">
+                    <div className="bg-gray-50/50 p-6 rounded-[1.5rem] border border-gray-100 space-y-4">
                         <div className="flex justify-between items-center border-b border-gray-200 pb-3">
                            <h4 className="text-[11px] font-black text-bb-blue uppercase italic tracking-widest">Recorrência & Parcelas</h4>
 	                           <button
