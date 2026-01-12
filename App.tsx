@@ -3,6 +3,7 @@ import {
   GoogleAuthProvider,
   onAuthStateChanged,
   signInWithPopup,
+  signInWithRedirect,
   signOut,
   User,
 } from "firebase/auth";
@@ -18,6 +19,7 @@ import TaxReports from "./components/TaxReports";
 import ImportExport from "./components/ImportExport";
 import Settings from "./components/Settings";
 import InssBrasil from "./components/InssBrasil";
+import Admin from "./components/Admin";
 
 import { auth, db } from "./lib/firebase";
 import {
@@ -40,6 +42,7 @@ import {
   listInssRecords,
   upsertHouseholdItem,
   deleteHouseholdItem,
+  type HouseholdInvite,
 } from "./lib/cloudStore";
 
 import type {
@@ -121,7 +124,7 @@ export default function App() {
       setMembershipReady(false);
       try {
         const m = await getHouseholdMember(u.uid, householdId);
-        if (m && m.active) {
+        if (m && (m as any).active !== false) {
           setMemberRole(m.role as any);
           setMembershipReady(true);
         } else {
@@ -141,7 +144,23 @@ export default function App() {
 
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
-    await signInWithPopup(auth, provider);
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (e: any) {
+      const code = String(e?.code ?? "");
+      // Em abas anônimas/políticas de privacidade restritivas, o popup pode falhar.
+      // Fallback: redirect (mais estável).
+      if (
+        code === "auth/popup-blocked" ||
+        code === "auth/popup-closed-by-user" ||
+        code === "auth/cancelled-popup-request" ||
+        code === "auth/operation-not-supported-in-this-environment"
+      ) {
+        await signInWithRedirect(auth, provider);
+        return;
+      }
+      throw e;
+    }
   };
 
   const handleLogout = async () => {
@@ -203,7 +222,7 @@ const handleAcceptInvite = useCallback(async () => {
     });
 
     const m = await getHouseholdMember(user.uid, householdId);
-    if (m && m.active) {
+    if (m && (m as any).active !== false) {
       setMemberRole(m.role as any);
       setMembershipReady(true);
       setInviteInfo("Convite aceito. Acesso liberado.");
@@ -1210,6 +1229,14 @@ const handleAcceptInvite = useCallback(async () => {
   // -------------------- NAV --------------------
   const [activeTab, setActiveTab] = useState("dashboard");
 
+  // Guard: aba Admin só pode ser acessada por ADMIN.
+  useEffect(() => {
+    if (activeTab === "admin" && memberRole !== "ADMIN") {
+      setActiveTab("dashboard");
+    }
+  }, [activeTab, memberRole]);
+
+
   const contentTitle = useMemo(() => {
     const map: Record<string, string> = {
       dashboard: "Painel Geral",
@@ -1220,6 +1247,7 @@ const handleAcceptInvite = useCallback(async () => {
       investments: "Investimentos",
       taxes: "Cálculo de IVA",
       import: "Importar/Exportar",
+      admin: "Administração",
       settings: "Configurações",
     };
     return map[activeTab] ?? "FinanceFamily";
@@ -1306,6 +1334,10 @@ const handleAcceptInvite = useCallback(async () => {
             onSaveReceipt={onSaveReceipt}
             onImportInssRecords={onImportInssRecords}
           />
+        );
+      case "admin":
+        return (
+          <Admin householdId={householdId} user={user} memberRole={memberRole} />
         );
       case "settings":
         return (
@@ -1442,7 +1474,7 @@ const handleAcceptInvite = useCallback(async () => {
 
   return (
     <div className="min-h-screen flex bg-gray-50">
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} showAdmin={memberRole === "ADMIN"} />
 
       <div className="flex-1 flex flex-col min-w-0">
         <div className="bg-white border-b px-6 py-3 flex items-center justify-between gap-4">

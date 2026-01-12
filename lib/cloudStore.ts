@@ -731,6 +731,9 @@ export async function listTransacoesPage(params: {
   // Datas em ISO yyyy-mm-dd (mesmo padrão de data_competencia no app)
   startDate?: string; // inclusive
   endDate?: string;   // exclusive
+  // Campo de data usado para filtrar/ordenar quando startDate/endDate são informados.
+  // Default mantém o comportamento antigo (data_competencia).
+  dateField?: "data_competencia" | "data_prevista_pagamento";
 }) {
   const {
     householdId = DEFAULT_HOUSEHOLD_ID,
@@ -739,33 +742,72 @@ export async function listTransacoesPage(params: {
     cursor = null,
     startDate,
     endDate,
+    dateField = "data_competencia",
   } = params;
 
   const col = collection(db, `${householdPath(householdId)}/transacoes`);
 
-  const constraints: any[] = [];
+  const runQuery = async (opts: {
+    includeCountry: boolean;
+    orderField: "data_competencia" | "data_prevista_pagamento";
+    rangeField: "data_competencia" | "data_prevista_pagamento";
+  }) => {
+    const constraints: any[] = [];
 
-  // Filtro por país (quando não é GLOBAL)
-  if (viewMode !== "GLOBAL") {
-    constraints.push(where("codigo_pais", "==", viewMode));
+    // Filtro por país (quando não é GLOBAL)
+    if (opts.includeCountry && viewMode !== "GLOBAL") {
+      constraints.push(where("codigo_pais", "==", viewMode));
+    }
+
+    // Filtro por período (opcional)
+    // Importante: quando usamos range, Firestore exige orderBy no mesmo campo.
+    if (startDate && endDate) {
+      constraints.push(where(opts.rangeField, ">=", startDate));
+      constraints.push(where(opts.rangeField, "<", endDate));
+    }
+
+    // Ordenação default do Ledger: mais recente → mais antigo
+    // Observação: datas são strings ISO, ordenação lexicográfica funciona.
+    constraints.push(orderBy(opts.orderField, "desc"));
+    constraints.push(orderBy("__name__", "desc"));
+
+    if (cursor) constraints.push(startAfter(cursor));
+    constraints.push(limit(pageSize));
+
+    return getDocs(query(col, ...constraints));
+  };
+
+  // Tentativa 1 (preferida): aplicar filtros pelo campo selecionado
+  // (ex.: CAIXA => data_prevista_pagamento). Isso evita “ficar clicando Ver mais”.
+  const preferredField: "data_competencia" | "data_prevista_pagamento" =
+    startDate && endDate ? dateField : "data_competencia";
+
+  let snap;
+  try {
+    snap = await runQuery({
+      includeCountry: true,
+      orderField: preferredField,
+      rangeField: preferredField,
+    });
+  } catch (e) {
+    // Tentativa 2: remove o filtro de país para reduzir necessidade de índice composto.
+    // (o filtro por país pode ser aplicado no cliente sem quebrar a lista)
+    try {
+      snap = await runQuery({
+        includeCountry: false,
+        orderField: preferredField,
+        rangeField: preferredField,
+      });
+    } catch (e2) {
+      // Tentativa 3 (fallback): volta para o comportamento antigo (data_competencia)
+      // para não travar o app por falta de índices.
+      snap = await runQuery({
+        includeCountry: true,
+        orderField: "data_competencia",
+        rangeField: "data_competencia",
+      });
+    }
   }
-
-  // Filtro por período (opcional)
-  if (startDate && endDate) {
-    constraints.push(where("data_competencia", ">=", startDate));
-    constraints.push(where("data_competencia", "<", endDate));
-  }
-
-  // Ordenação default do Ledger: mais recente → mais antigo
-  // Observação: data_competencia é string ISO, ordenação lexicográfica funciona.
-  constraints.push(orderBy("data_competencia", "desc"));
-  constraints.push(orderBy("__name__", "desc"));
-
-  if (cursor) constraints.push(startAfter(cursor));
-  constraints.push(limit(pageSize));
-
-  const q = query(col, ...constraints);
-  const snap = await getDocs(q);
 
   const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
   const nextCursor: TransacoesCursor = snap.docs.length
