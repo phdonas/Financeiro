@@ -56,19 +56,81 @@ function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
-function parseISODateLike(raw?: string): Date | null {
-  const s = String(raw ?? "").trim();
+function parseISODateLike(s?: string): Date | null {
   if (!s) return null;
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return null;
-  return d;
+  const raw = String(s).trim();
+  if (!raw) return null;
+
+  // Remove time portion if present
+  const cleaned = raw.split("T")[0].split(" ")[0].trim();
+
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+    const d = new Date(cleaned + "T00:00:00");
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  // YYYY/MM/DD
+  if (/^\d{4}\/\d{2}\/\d{2}$/.test(cleaned)) {
+    const [y, m, d] = cleaned.split("/").map((x) => parseInt(x, 10));
+    const dt = new Date(y, m - 1, d);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  // DD/MM/YYYY
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(cleaned)) {
+    const [d, m, y] = cleaned.split("/").map((x) => parseInt(x, 10));
+    const dt = new Date(y, m - 1, d);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  // DD-MM-YYYY
+  if (/^\d{2}-\d{2}-\d{4}$/.test(cleaned)) {
+    const [d, m, y] = cleaned.split("-").map((x) => parseInt(x, 10));
+    const dt = new Date(y, m - 1, d);
+    return isNaN(dt.getTime()) ? null : dt;
+  }
+
+  // Fallback to Date parsing
+  const d = new Date(raw);
+  return isNaN(d.getTime()) ? null : d;
 }
+
 
 function monthKeyFromDate(d: Date): MonthKey {
   const y = d.getFullYear();
   const m = d.getMonth() + 1;
   return `${y}-${pad2(m)}` as MonthKey;
 }
+
+function formatISODateLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = pad2(d.getMonth() + 1);
+  const day = pad2(d.getDate());
+  return `${y}-${m}-${day}`;
+}
+
+function startOfMonthISO(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-01`;
+}
+
+function endOfMonthISO(d: Date): string {
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return formatISODateLocal(last);
+}
+
+function addDays(d: Date, days: number): Date {
+  const out = new Date(d);
+  out.setDate(out.getDate() + days);
+  return out;
+}
+
+function addMonths(d: Date, months: number): Date {
+  const out = new Date(d);
+  out.setMonth(out.getMonth() + months);
+  return out;
+}
+
 
 function monthKeyFromYM(ano: number, mes: number): MonthKey {
   return `${ano}-${pad2(mes)}` as MonthKey;
@@ -188,34 +250,71 @@ export default function Dashboard({
     return arr as MonthKey[];
   }, [txs, budgets]);
 
-  const defaultEnd = useMemo<MonthKey>(() => {
-    if (allMonthKeys.length > 0) return allMonthKeys[allMonthKeys.length - 1];
-    const now = new Date();
-    return monthKeyFromDate(now);
-  }, [allMonthKeys]);
+    type PeriodPreset = "30D" | "90D" | "YTD" | "12M" | "CUSTOM";
 
-  const defaultStart = useMemo<MonthKey>(() => {
-    if (allMonthKeys.length > 0) return allMonthKeys[allMonthKeys.length - 1];
-    const now = new Date();
-    return monthKeyFromDate(now);
-  }, [allMonthKeys]);
-
-  const [periodStart, setPeriodStart] = useState<MonthKey>(defaultStart);
-  const [periodEnd, setPeriodEnd] = useState<MonthKey>(defaultEnd);
+  const [periodPreset, setPeriodPreset] = useState<PeriodPreset>("CUSTOM");
+  const [customStart, setCustomStart] = useState<string>(() => startOfMonthISO(new Date()));
+  const [customEnd, setCustomEnd] = useState<string>(() => endOfMonthISO(new Date()));
   const [selectedCatId, setSelectedCatId] = useState<string | null>(null);
   const [projectionMonthsCount, setProjectionMonthsCount] = useState<number>(6);
 
-  const normalizedPeriod = useMemo(() => {
-    const s = String(periodStart);
-    const e = String(periodEnd);
-    return s <= e ? { start: periodStart, end: periodEnd } : { start: periodEnd, end: periodStart };
-  }, [periodStart, periodEnd]);
+  const resolvedPeriod = useMemo(() => {
+    const now = new Date();
+
+    let startISO = customStart;
+    let endISO = customEnd;
+
+    if (periodPreset === "30D") {
+      startISO = formatISODateLocal(addDays(now, -29));
+      endISO = formatISODateLocal(now);
+    } else if (periodPreset === "90D") {
+      startISO = formatISODateLocal(addDays(now, -89));
+      endISO = formatISODateLocal(now);
+    } else if (periodPreset === "YTD") {
+      startISO = `${now.getFullYear()}-01-01`;
+      endISO = formatISODateLocal(now);
+    } else if (periodPreset === "12M") {
+      const start = addMonths(now, -11);
+      startISO = `${start.getFullYear()}-${pad2(start.getMonth() + 1)}-01`;
+      endISO = formatISODateLocal(now);
+    }
+
+    // Normalize order
+    if (startISO > endISO) {
+      const tmp = startISO;
+      startISO = endISO;
+      endISO = tmp;
+    }
+
+    const startDate = parseISODateLike(startISO) ?? new Date(now.getFullYear(), now.getMonth(), 1);
+    const endDate = parseISODateLike(endISO) ?? new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+    // Inclusive range
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    const startMonth = monthKeyFromDate(startDate);
+    const endMonth = monthKeyFromDate(endDate);
+
+    return { startISO, endISO, startDate, endDate, startMonth, endMonth };
+  }, [periodPreset, customStart, customEnd]);
 
   const monthsInPeriod = useMemo(() => {
-    return monthRange(normalizedPeriod.start, normalizedPeriod.end);
-  }, [normalizedPeriod]);
+    return monthRange(resolvedPeriod.startMonth, resolvedPeriod.endMonth);
+  }, [resolvedPeriod.startMonth, resolvedPeriod.endMonth]);
 
-  const modeLabel = useMemo(() => {
+  const periodLabel = useMemo(() => {
+    // Display as YYYY-MM when the range is exactly the current month, otherwise show dates.
+    if (
+      resolvedPeriod.startISO.endsWith("-01") &&
+      resolvedPeriod.endISO === endOfMonthISO(parseISODateLike(resolvedPeriod.startISO) ?? new Date())
+    ) {
+      return monthKeyFromDate(parseISODateLike(resolvedPeriod.startISO) ?? new Date());
+    }
+    return `${resolvedPeriod.startISO} → ${resolvedPeriod.endISO}`;
+  }, [resolvedPeriod.startISO, resolvedPeriod.endISO]);
+
+const modeLabel = useMemo(() => {
     if (viewMode === "PT") return "🇵🇹 PT";
     if (viewMode === "BR") return "🇧🇷 BR";
     return "🌐 Consolidado";
@@ -231,7 +330,9 @@ export default function Dashboard({
   };
 
   const filteredTxs = useMemo(() => {
-    const periodSet = new Set(monthsInPeriod);
+    const startTs = resolvedPeriod.startDate.getTime();
+    const endTs = resolvedPeriod.endDate.getTime();
+
     return txs.filter((t) => {
       if (viewMode !== "GLOBAL") {
         if ((t?.codigo_pais || "PT") !== viewMode) return false;
@@ -241,10 +342,10 @@ export default function Dashboard({
         parseISODateLike(t?.date) ||
         parseISODateLike(t?.data_prevista_pagamento);
       if (!d) return false;
-      const mk = monthKeyFromDate(d);
-      return periodSet.has(mk);
+      const ts = d.getTime();
+      return ts >= startTs && ts <= endTs;
     });
-  }, [txs, viewMode, monthsInPeriod]);
+  }, [txs, viewMode, resolvedPeriod.startISO, resolvedPeriod.endISO]);
 
   const filteredBudgets = useMemo(() => {
     const periodSet = new Set(monthsInPeriod);
@@ -283,7 +384,7 @@ export default function Dashboard({
 
   const trendByCategory = useMemo(() => {
     // Tendência: média móvel simples dos últimos 3 meses (até o fim do período)
-    const end = normalizedPeriod.end;
+    const end = resolvedPeriod.endMonth;
     const [ey, em] = end.split("-").map((x) => Number(x));
     const back: MonthKey[] = [];
     for (let i = 0; i < 3; i++) {
@@ -327,7 +428,7 @@ export default function Dashboard({
       out.set(cid, avg * monthsCount);
     }
     return out;
-  }, [txs, viewMode, normalizedPeriod, monthsInPeriod, rates]);
+  }, [txs, viewMode, resolvedPeriod.endMonth, monthsInPeriod, rates]);
 
   const tableRows = useMemo(() => {
     const set = new Set<string>();
@@ -387,18 +488,6 @@ export default function Dashboard({
     rows.sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
     return rows;
   }, [selectedCatId, filteredTxs, contasByCat, viewMode, rates]);
-
-  const monthsOptions = useMemo(() => {
-    const opts = allMonthKeys.length > 0 ? allMonthKeys : [defaultEnd];
-    return opts;
-  }, [allMonthKeys, defaultEnd]);
-
-  const periodLabel = useMemo(() => {
-    const s = normalizedPeriod.start;
-    const e = normalizedPeriod.end;
-    if (s === e) return s;
-    return `${s} → ${e}`;
-  }, [normalizedPeriod]);
 
   const projectionStart = useMemo<MonthKey>(() => {
     return monthKeyFromDate(new Date());
@@ -510,47 +599,78 @@ export default function Dashboard({
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-3">
             <div>
-              <label className="text-[10px] font-black uppercase text-gray-500">Início</label>
-              <select
-                value={periodStart}
-                onChange={(e) => setPeriodStart(e.target.value as MonthKey)}
-                className="mt-1 p-3 rounded-xl border bg-gray-50 text-[12px]"
-              >
-                {monthsOptions.map((k) => (
-                  <option key={`s-${k}`} value={k}>
-                    {k}
-                  </option>
+              <div className="text-xs font-semibold text-gray-500 mb-2">PERÍODO</div>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  ["30D", "30 DIAS"],
+                  ["90D", "90 DIAS"],
+                  ["YTD", "YTD"],
+                  ["12M", "12 MESES"],
+                  ["CUSTOM", "PERSONALIZADO"],
+                ] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    className={`px-4 py-2 rounded-xl border text-sm font-semibold transition ${
+                      periodPreset === key
+                        ? "bg-blue-700 text-white border-blue-700"
+                        : "bg-white text-gray-600 border-gray-200 hover:border-gray-300"
+                    }`}
+                    onClick={() => setPeriodPreset(key)}
+                  >
+                    {label}
+                  </button>
                 ))}
-              </select>
+              </div>
             </div>
 
-            <div>
-              <label className="text-[10px] font-black uppercase text-gray-500">Fim</label>
-              <select
-                value={periodEnd}
-                onChange={(e) => setPeriodEnd(e.target.value as MonthKey)}
-                className="mt-1 p-3 rounded-xl border bg-gray-50 text-[12px]"
-              >
-                {monthsOptions.map((k) => (
-                  <option key={`e-${k}`} value={k}>
-                    {k}
-                  </option>
-                ))}
-              </select>
+            <div className="flex flex-wrap gap-3 items-end justify-between">
+              <div className="flex flex-wrap gap-6 items-end">
+                <div>
+                  <div className="text-xs font-semibold text-gray-500 mb-1">INÍCIO</div>
+                  <input
+                    type="date"
+                    className="px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                    value={periodPreset === "CUSTOM" ? customStart : resolvedPeriod.startISO}
+                    disabled={periodPreset !== "CUSTOM"}
+                    onChange={(e) => {
+                      setPeriodPreset("CUSTOM");
+                      setCustomStart(e.target.value);
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs font-semibold text-gray-500 mb-1">FIM</div>
+                  <input
+                    type="date"
+                    className="px-3 py-2 rounded-xl border border-gray-200 text-sm"
+                    value={periodPreset === "CUSTOM" ? customEnd : resolvedPeriod.endISO}
+                    disabled={periodPreset !== "CUSTOM"}
+                    onChange={(e) => {
+                      setPeriodPreset("CUSTOM");
+                      setCustomEnd(e.target.value);
+                    }}
+                  />
+                </div>
+              </div>
+
+              {selectedCatId && (
+                <button
+                  className="px-3 py-2 rounded-xl bg-white border border-gray-200 hover:bg-gray-50 text-sm"
+                  onClick={() => setSelectedCatId(null)}
+                >
+                  ← Voltar
+                </button>
+              )}
             </div>
 
-            {selectedCatId && (
-              <button
-                type="button"
-                onClick={() => setSelectedCatId(null)}
-                className="px-4 py-3 rounded-xl border bg-white text-[10px] font-black uppercase shadow-sm"
-              >
-                ← Voltar
-              </button>
-            )}
+            <div className="text-xs text-gray-500">
+              Período selecionado: <span className="font-semibold">{periodLabel}</span>
+            </div>
           </div>
+
         </div>
       </div>
 
@@ -582,7 +702,11 @@ export default function Dashboard({
                   <div className="text-[12px] text-gray-500 font-semibold">Sem dados no período.</div>
                 ) : (
                   topPct.map((r) => (
-                    <div key={`pct-${r.cid}`} className="flex items-center justify-between gap-3">
+                    <div
+                      key={`pct-${r.cid}`}
+                      className="flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-50 rounded-lg px-2 py-1 -mx-2"
+                      onClick={() => setSelectedCatId(r.cid)}
+                    >
                       <div className="text-[12px] font-semibold text-gray-700 truncate">{r.nome}</div>
                       <div className={`text-[12px] font-black ${(r.pct ?? 0) >= 0 ? "text-red-600" : "text-green-600"}`}>
                         {((r.pct ?? 0)).toFixed(1)}%
