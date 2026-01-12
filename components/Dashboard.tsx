@@ -231,6 +231,23 @@ export default function Dashboard({
     return m;
   }, [cats]);
 
+  // Regra: pagamentos de Cartão de Crédito (Categoria PAGAMENTOS + Item Cartão de Crédito)
+  // não entram como despesa no Painel Geral (porque as despesas individuais já foram lançadas).
+  const isCreditCardPayment = (t: Transacao): boolean => {
+    if (String(t.tipo).toUpperCase() === "PAGAMENTO_FATURA") return true;
+
+    const catId = String(t.categoria_id ?? "");
+    const contaId = String(t.conta_contabil_id ?? "");
+    const catName = (catById.get(catId)?.nome ?? "").trim().toUpperCase();
+    const contaName = (contasByCat.get(catId)?.get(contaId) ?? "").trim().toUpperCase();
+
+    if (catName !== "PAGAMENTOS") return false;
+    const hasCartao = contaName.includes("CARTAO") || contaName.includes("CARTÃO");
+    const hasCredito = contaName.includes("CREDITO") || contaName.includes("CRÉDITO");
+    return hasCartao && hasCredito;
+  };
+
+
   const allMonthKeys = useMemo(() => {
     const set = new Set<string>();
     for (const t of txs) {
@@ -374,6 +391,7 @@ const modeLabel = useMemo(() => {
     const m = new Map<string, number>();
     for (const t of filteredTxs) {
       if (String(t?.tipo ?? "") !== "DESPESA") continue;
+      if (isCreditCardPayment(t)) continue;
       const cid = String(t?.categoria_id ?? "");
       if (!cid) continue;
       const v = getConverted(t?.valor, t?.codigo_pais);
@@ -401,6 +419,7 @@ const modeLabel = useMemo(() => {
 
     for (const t of txs) {
       if (String(t?.tipo ?? "") !== "DESPESA") continue;
+      if (isCreditCardPayment(t)) continue;
       if (viewMode !== "GLOBAL") {
         if ((t?.codigo_pais || "PT") !== viewMode) continue;
       }
@@ -473,6 +492,7 @@ const modeLabel = useMemo(() => {
     const m = new Map<string, number>();
     for (const t of filteredTxs) {
       if (String(t?.tipo ?? "") !== "DESPESA") continue;
+      if (isCreditCardPayment(t)) continue;
       if (String(t?.categoria_id ?? "") !== selectedCatId) continue;
       const it = String(t?.conta_contabil_id ?? "");
       if (!it) continue;
