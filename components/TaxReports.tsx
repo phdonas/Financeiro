@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { listHouseholdItems, upsertHouseholdItem } from '../lib/cloudStore';
+import { DEFAULT_HOUSEHOLD_ID, listHouseholdItems, upsertHouseholdItem } from '../lib/cloudStore';
 import { CategoriaContabil, Receipt, Fornecedor, Transacao, TipoTransacao, FormaPagamento } from '../types';
 
 interface TaxReportsProps {
@@ -89,6 +89,16 @@ const TaxReports: React.FC<TaxReportsProps> = ({
     description: '',
   });
 
+  // UX + estabilidade: quando abrir o modal e existir ao menos 1 banco, pré-seleciona o primeiro.
+  // Evita submit inválido e reduz chances de erro por forma_pagamento_id vazio.
+  useEffect(() => {
+    if (!isLaunchModalOpen) return;
+    if (launchData.forma_pagamento_id) return;
+    const first = (formasPagamento ?? [])[0]?.id;
+    if (first) setLaunchData((prev) => ({ ...prev, forma_pagamento_id: first }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLaunchModalOpen, formasPagamento]);
+
   const [ivaCategoriaId, setIvaCategoriaId] = useState<string>('');
   const [ivaContaId, setIvaContaId] = useState<string>('');
 
@@ -102,12 +112,37 @@ const TaxReports: React.FC<TaxReportsProps> = ({
       if (!householdId) return;
 
       try {
-        const cats = await listHouseholdItems<CategoriaContabil>('categorias', householdId);
-        const cat = (cats || []).find((c) => normKey(c?.nome || '') === 'PAGAMENTOS');
-        const conta = (cat?.contas || []).find((it) => normKey(it?.nome || '') === normKey('Imob - IVA'));
+        // Cloud: lê do Firestore
+        if (isCloud) {
+          const cats = await listHouseholdItems<CategoriaContabil>('categorias', householdId);
+          const cat = (cats || []).find((c) => normKey(c?.nome || '') === 'PAGAMENTOS');
+          const conta = (cat?.contas || []).find((it) => normKey(it?.nome || '') === normKey('Imob - IVA'));
+          if (!cancelled) {
+            setIvaCategoriaId(cat?.id || '');
+            setIvaContaId(conta?.id || '');
+          }
+          return;
+        }
+
+        // Local: lê do localStorage (mesma convenção do App.tsx)
+        const lsPrefix = `ff_${DEFAULT_HOUSEHOLD_ID}_`;
+        const raw = localStorage.getItem(`${lsPrefix}categorias`);
+        const cats = raw ? (JSON.parse(raw) as CategoriaContabil[]) : [];
+        const safeCats = Array.isArray(cats) ? cats : [];
+
+        const catPag = safeCats.find((c) => normKey(c?.nome || '') === 'PAGAMENTOS');
+        const contaIva = (catPag?.contas || []).find((it) => normKey(it?.nome || '') === normKey('Imob - IVA'));
+
+        // fallback seguro (evita crash por ids inexistentes)
+        const fallbackCat = catPag || safeCats.find((c) => normKey(c?.nome || '').includes('PAG')) || safeCats[0];
+        const fallbackConta =
+          contaIva ||
+          (fallbackCat?.contas || []).find((it) => normKey(it?.nome || '').includes('IVA')) ||
+          (fallbackCat?.contas || [])[0];
+
         if (!cancelled) {
-          setIvaCategoriaId(cat?.id || '');
-          setIvaContaId(conta?.id || '');
+          setIvaCategoriaId(fallbackCat?.id || '');
+          setIvaContaId(fallbackConta?.id || '');
         }
       } catch {
         // ignore
@@ -288,7 +323,8 @@ const TaxReports: React.FC<TaxReportsProps> = ({
         data_prevista_pagamento: data,
         description,
         valor,
-        status: 'ABERTO',
+        // mantém compatibilidade com o contrato StatusTransacao (evita crash em telas que assumem enum conhecido)
+        status: 'PLANEJADO',
         origem: 'MANUAL',
         recorrencia_grupo_id: groupId,
         recorrencia_seq: parcelaAtual,
@@ -543,7 +579,7 @@ const TaxReports: React.FC<TaxReportsProps> = ({
                   onChange={(e) => setLaunchData({ ...launchData, forma_pagamento_id: e.target.value })}
                 >
                   <option value="">Selecione Banco...</option>
-                  {formasPagamento.map((f) => (
+                  {(formasPagamento ?? []).map((f) => (
                     <option key={f.id} value={f.id}>
                       {f.nome}
                     </option>
