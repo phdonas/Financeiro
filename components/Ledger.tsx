@@ -92,6 +92,8 @@ const Ledger: React.FC<LedgerProps> = ({
   const [cloudTotals, setCloudTotals] = useState<{ entradas: number; saidas: number } | null>(null);
   const [cloudTotalsLoading, setCloudTotalsLoading] = useState<boolean>(false);
   const [cloudTotalsError, setCloudTotalsError] = useState<string | null>(null);
+  // Sprint S3: total de lançamentos no período (para corrigir "Mostrando X de Y")
+  const [cloudTotalCount, setCloudTotalCount] = useState<number | null>(null);
 
   const effectiveHouseholdId = householdId ?? DEFAULT_HOUSEHOLD_ID;
   const cloudLoadingRef = useRef(false);
@@ -238,6 +240,7 @@ useEffect(() => {
     setCloudTotals(null);
     setCloudTotalsLoading(false);
     setCloudTotalsError(null);
+    setCloudTotalCount(null);
     return;
   }
   if (!filtersHydratedRef.current) return;
@@ -247,6 +250,7 @@ useEffect(() => {
     setCloudTotals(null);
     setCloudTotalsLoading(false);
     setCloudTotalsError(null);
+    setCloudTotalCount(null);
     return;
   }
 
@@ -256,6 +260,7 @@ useEffect(() => {
     setCloudTotals(null);
     setCloudTotalsError(null);
     setCloudTotalsLoading(true);
+    setCloudTotalCount(null);
 
     try {
       const PAGE = 500;
@@ -264,6 +269,7 @@ useEffect(() => {
       let pages = 0;
 
       const acc = { entradas: 0, saidas: 0 };
+      let count = 0;
 
       const shouldExclude = (t: any) => {
         const categoriaNome = categoriasById.get(t.categoria_id)?.nome ?? '';
@@ -290,6 +296,9 @@ useEffect(() => {
           if (viewMode !== 'GLOBAL' && t?.codigo_pais !== viewMode) continue;
           if (catFilter && t?.categoria_id !== catFilter) continue;
 
+          // Sprint S3: conta total de lançamentos (após filtros) para corrigir o texto de paginação.
+          count += 1;
+
           const val = Number(t?.valor || 0);
           if (t?.tipo === TipoTransacao.RECEITA) {
             acc.entradas += val;
@@ -311,12 +320,16 @@ useEffect(() => {
         );
       }
 
-      if (!cancelled) setCloudTotals(acc);
+      if (!cancelled) {
+        setCloudTotals(acc);
+        setCloudTotalCount(count);
+      }
     } catch (err: any) {
       console.error('Falha ao calcular totais do período (cloud):', err);
       if (!cancelled) {
         setCloudTotalsError('Falha ao calcular Total Geral do período no modo nuvem. Veja o Console (DevTools).');
         setCloudTotals(null);
+        setCloudTotalCount(null);
       }
     } finally {
       if (!cancelled) setCloudTotalsLoading(false);
@@ -745,6 +758,19 @@ const canLoadMore = isCloud
   ? cloudHasMore
   : (Array.isArray(filteredTxs) ? filteredTxs.length : 0) > visibleTxs.length;
 
+// Sprint S3: texto de paginação sem ambiguidade (Mostrando X de Y + página)
+const pagingInfo = useMemo(() => {
+  const shown = Array.isArray(visibleTxs) ? visibleTxs.length : 0;
+  const totalLocal = Array.isArray(filteredTxs) ? filteredTxs.length : 0;
+
+  const total = isCloud ? (typeof cloudTotalCount === 'number' ? cloudTotalCount : null) : totalLocal;
+  const perPage = isCloud ? Math.max(1, pageSize) : Math.max(1, PAGE_SIZE);
+  const page = Math.max(1, Math.ceil(shown / perPage));
+  const pages = typeof total === 'number' ? Math.max(1, Math.ceil(total / perPage)) : null;
+
+  return { shown, total, page, pages, perPage };
+}, [isCloud, visibleTxs, filteredTxs, cloudTotalCount, pageSize]);
+
 const handleLoadMore = () => {
   if (isCloud) {
     if (!cloudHasMore) return;
@@ -970,7 +996,7 @@ const handleLoadMore = () => {
   <div className="flex items-center gap-2">
     {isCloud && (
       <>
-        <span className="text-xs text-gray-500">Página</span>
+        <span className="text-xs text-gray-500">Itens/página</span>
         <select
           className="border rounded-lg px-2 py-1 text-xs"
           value={pageSize}
@@ -985,7 +1011,23 @@ const handleLoadMore = () => {
     {isCloud && cloudError && <span className="text-xs text-red-600">{cloudError}</span>}
   </div>
         <p className="text-xs text-gray-500">
-          Mostrando <span className="font-semibold">{visibleTxs.length}</span> de <span className="font-semibold">{filteredTxs.length}</span> lançamentos
+          Mostrando <span className="font-semibold">{pagingInfo.shown}</span>
+          {typeof pagingInfo.total === 'number' ? (
+            <>
+              {' '}lançamentos de <span className="font-semibold">{pagingInfo.total}</span>
+              {pagingInfo.pages ? (
+                <> • Página <span className="font-semibold">{pagingInfo.page}</span>/<span className="font-semibold">{pagingInfo.pages}</span></>
+              ) : (
+                <> • Página <span className="font-semibold">{pagingInfo.page}</span></>
+              )}
+            </>
+          ) : (
+            <>
+              {' '}lançamentos
+              {' '}• Página <span className="font-semibold">{pagingInfo.page}</span>
+              {isCloud && cloudTotalsLoading ? ' (calculando total...)' : ''}
+            </>
+          )}
         </p>
 
         {canLoadMore && (
