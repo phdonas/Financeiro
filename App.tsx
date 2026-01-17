@@ -57,6 +57,7 @@ import type {
   InssYearlyConfig,
 } from "./types";
 import { TipoTransacao } from "./types";
+import { getDefaultBankId as getDefaultBankIdFromRules } from "./lib/financeDefaults";
 
 type ViewMode = "PT" | "BR" | "GLOBAL";
 
@@ -473,31 +474,10 @@ const handleAcceptInvite = useCallback(async () => {
   }, [exchangeRates]);
 
 
-  // Sprint 3.3: default de conta/recebimento para Recibos/Lançamentos vinculados
-  // PT → NB | BR → BB (fallback para 1ª forma de pagamento cadastrada)
+  // Regra 2 (Sprint S1): default de banco por país, com prioridade por match exato.
+  // PT → NB | BR → BB
   const getDefaultBankId = useCallback(
-    (country: "PT" | "BR") => {
-      const list = Array.isArray(formasPagamento) ? formasPagamento : [];
-      const upper = (s: any) => String(s ?? "").toUpperCase();
-      const mapped = list.map((fp) => ({ id: fp.id, nome: upper(fp.nome) }));
-      const pick = (pred: (n: string) => boolean) =>
-        mapped.find((x) => pred(x.nome))?.id;
-      if (country === "PT") {
-        return (
-          pick((n) => n.includes("NB")) ||
-          pick((n) => n.includes("NOVO BANCO")) ||
-          list[0]?.id ||
-          ""
-        );
-      }
-      return (
-        pick((n) => n.includes("BANCO DO BRASIL")) ||
-        pick((n) => n === "BB" || n.includes(" BB")) ||
-        pick((n) => n.startsWith("BB ")) ||
-        list[0]?.id ||
-        ""
-      );
-    },
+    (country: "PT" | "BR") => getDefaultBankIdFromRules(formasPagamento, country),
     [formasPagamento]
   );
 
