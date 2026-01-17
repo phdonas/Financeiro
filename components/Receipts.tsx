@@ -6,6 +6,8 @@ import type {
   Receipt,
 } from "../types";
 import { DEFAULT_HOUSEHOLD_ID, listReceiptsPage } from "../lib/cloudStore";
+import { getDefaultBankId as getDefaultBankIdFromRules } from "../lib/financeDefaults";
+import { sortByNome } from "../lib/sortUtils";
 
 interface ReceiptsProps {
   viewMode: 'BR' | 'PT' | 'GLOBAL';
@@ -290,38 +292,21 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
     const cat: any = categorias.find((c) => c.id === catId);
     const contas: any[] = Array.isArray(cat?.contas) ? cat.contas : [];
     const ccode = String((formData as any)?.country_code || (viewMode === 'GLOBAL' ? '' : viewMode) || '').trim();
-    return contas
-      .filter((ct) => {
-        if (!ccode) return true;
-        return !ct?.codigo_pais || String(ct.codigo_pais) === ccode;
-      })
-      .sort((a, b) => String(a?.nome || '').localeCompare(String(b?.nome || ''), 'pt-BR'));
+    const filtered = contas.filter((ct) => {
+      if (!ccode) return true;
+      return !ct?.codigo_pais || String(ct.codigo_pais) === ccode;
+    });
+    return sortByNome(filtered as any, 'pt-BR');
   }, [categorias, formData.categoria_id, formData.country_code, viewMode]);
 
-  const getDefaultBankId = (country: 'PT' | 'BR') => {
-    const list = Array.isArray(formasPagamento) ? formasPagamento : [];
-    const upper = (s: any) => String(s ?? '').toUpperCase();
-    const match = (id: string, nome: string) => ({ id, nome: upper(nome) });
-    const mapped = list.map(fp => match(fp.id, fp.nome));
-    const pick = (pred: (n: string) => boolean) => mapped.find(x => pred(x.nome))?.id;
-    if (country === 'PT') {
-      return (
-        pick(n => n.includes('NB')) ||
-        pick(n => n.includes('NOVO BANCO')) ||
-        pick(n => n.includes('NOVOBANCO')) ||
-        pick(n => n.includes('NOVO-BANCO')) ||
-        list[0]?.id ||
-        ''
-      );
-    }
-    return (
-      pick(n => n.includes('BANCO DO BRASIL')) ||
-      pick(n => n === 'BB' || n.includes(' BB') || n.endsWith(' BB') || n.includes('BB ') || n.endsWith('BB')) ||
-      pick(n => n.startsWith('BB ')) ||
-      list[0]?.id ||
-      ''
-    );
-  };
+  // Regra 2 (Sprint S1): default de banco por país, com prioridade por match exato.
+  const getDefaultBankId = (country: 'PT' | 'BR') =>
+    getDefaultBankIdFromRules(formasPagamento, country);
+
+  // Regra 3 (Sprint S1): listas em ordem A–Z no ponto de uso (UI)
+  const fornecedoresSorted = useMemo(() => sortByNome(fornecedores, 'pt-BR'), [fornecedores]);
+  const categoriasSorted = useMemo(() => sortByNome(categorias, 'pt-BR'), [categorias]);
+  const formasSorted = useMemo(() => sortByNome(formasPagamento, 'pt-BR'), [formasPagamento]);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -374,16 +359,15 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
   }, []);
 
   const payingSuppliers = useMemo(() => {
-    const list = Array.isArray(fornecedores) ? fornecedores : [];
+    const list = Array.isArray(fornecedoresSorted) ? fornecedoresSorted : [];
     return list
       .filter((s) => isPayingSource(s))
       .filter((s) => {
         if (viewMode === 'GLOBAL') return true;
         const c = supplierCountry(s);
         return !c || c === viewMode;
-      })
-      .sort((a, b) => String(a.nome || '').localeCompare(String(b.nome || ''), 'pt-BR'));
-  }, [fornecedores, viewMode]);
+      });
+  }, [fornecedoresSorted, viewMode]);
 
   const baseList = useMemo(() => {
     return isCloud ? cloudItems : (Array.isArray(receipts) ? receipts : []);
@@ -679,14 +663,21 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Fornecedor / Pagadora</label>
                         <select required className="w-full bg-gray-50 p-4 rounded-xl text-xs font-black border border-gray-100" value={formData.fornecedor_id} onChange={e => {
                           const fornecedorId = e.target.value;
-                          const fornecedor = fornecedores.find(s => s.id === fornecedorId);
+                          const fornecedor = fornecedoresSorted.find(s => s.id === fornecedorId);
                           setFormData({
                             ...formData,
                             fornecedor_id: fornecedorId,
                             // Default editável: vem do Fornecedor/Fonte Pagadora.
                             flag_calcula_premiacao: fornecedor ? !!(fornecedor as any).flag_calcula_premiacao : !!formData.flag_calcula_premiacao,
                           });
-                        }}><option value="">Selecione o Fornecedor...</option>{fornecedores.filter(s => supplierCountry(s) === formData.country_code).filter(isPayingSource).map(s => <option key={s.id} value={s.id}>{s.nome}</option>)}</select>
+                        }}>
+                          <option value="">Selecione o Fornecedor...</option>
+                          {payingSuppliers
+                            .filter((s) => !formData.country_code || supplierCountry(s) === formData.country_code)
+                            .map((s) => (
+                              <option key={s.id} value={s.id}>{s.nome}</option>
+                            ))}
+                        </select>
                       </div>
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Categoria</label>
@@ -697,7 +688,7 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
                           onChange={(e) => setFormData({ ...formData, categoria_id: e.target.value, conta_contabil_id: '' })}
                         >
                           <option value="">Selecione uma categoria...</option>
-                          {categorias.filter(c => (c as any).tipo === 'RECEITA').map(c => (
+                          {categoriasSorted.filter(c => (c as any).tipo === 'RECEITA').map(c => (
                             <option key={c.id} value={c.id}>{c.nome}</option>
                           ))}
                         </select>
@@ -835,7 +826,10 @@ const [formData, setFormData] = useState<Partial<Receipt>>(initialForm);
 
                       <div className="space-y-1.5">
                         <label className="text-[9px] font-black uppercase text-gray-400 ml-1 italic">Banco de Destino</label>
-                        <select required className="w-full bg-white p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione Banco...</option>{formasPagamento.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
+                        <select required className="w-full bg-white p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}>
+                          <option value="">Selecione Banco...</option>
+                          {formasSorted.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}
+                        </select>
                       </div>
 
                       <div className="flex items-center justify-between bg-white p-4 rounded-xl border border-gray-100">

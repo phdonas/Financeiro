@@ -2,6 +2,8 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Transacao, TipoTransacao, StatusTransacao, CategoriaContabil, FormaPagamento } from '../types';
 import { listTransacoesPage, DEFAULT_HOUSEHOLD_ID } from '../lib/cloudStore';
+import { sortByNome } from '../lib/sortUtils';
+import { getDefaultBankId as getDefaultBankIdFromRules } from '../lib/financeDefaults';
 
 interface LedgerProps {
   viewMode: 'BR' | 'PT' | 'GLOBAL';
@@ -31,6 +33,10 @@ const Ledger: React.FC<LedgerProps> = ({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTxId, setEditingTxId] = useState<string | null>(null);
   const [catFilter, setCatFilter] = useState<string>('');
+
+  // Regra 3 (Sprint S1): listas em ordem A–Z no ponto de uso (UI)
+  const categoriasSorted = useMemo(() => sortByNome(categorias, 'pt-BR'), [categorias]);
+  const formasSorted = useMemo(() => sortByNome(formasPagamento, 'pt-BR'), [formasPagamento]);
 
   // Sprint 2.4: filtros por mês/ano + hardening contra dados incompletos
   // 0 significa "Todos"
@@ -280,12 +286,19 @@ useEffect(() => {
 
   const [saving, setSaving] = useState<boolean>(false);
 
+  // Regra 2 (Sprint S1): default de banco por país, com prioridade por match exato.
+  const getDefaultBankId = useCallback(
+    (country: 'PT' | 'BR') => getDefaultBankIdFromRules(formasPagamento, country),
+    [formasPagamento]
+  );
+
   // Evita crash quando a categoria ainda não está selecionada
   // ou quando dados no Firestore vierem sem a estrutura esperada (contas).
   const contasDaCategoriaSelecionada = useMemo(() => {
     const categoria = categorias.find((c) => c.id === formData.categoria_id);
     // `contas` deveria existir pelo type, mas pode estar ausente em dados antigos.
-    return categoria?.contas ?? [];
+    const contas = categoria?.contas ?? [];
+    return sortByNome(contas as any, 'pt-BR');
   }, [categorias, formData.categoria_id]);
 
     const makeId = () => {
@@ -684,7 +697,7 @@ const handleLoadMore = () => {
              onChange={e => setCatFilter(e.target.value)}
            >
              <option value="">Todas Categorias</option>
-             {categorias.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
+             {categoriasSorted.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
            </select>
            <select
              className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase tracking-[0.08em] text-bb-blue/80 appearance-none transition-all duration-200 ease border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
@@ -737,7 +750,9 @@ const handleLoadMore = () => {
           const mm = String(m).padStart(2, '0');
           const dd = String(day).padStart(2, '0');
           const dateStr = `${yyyy}-${mm}-${dd}`;
-          setFormData({ ...initialForm, data_competencia: dateStr, data_prevista_pagamento: dateStr });
+          const country = (viewMode === 'BR' ? 'BR' : 'PT') as 'PT' | 'BR';
+          const defaultBankId = getDefaultBankId(country);
+          setFormData({ ...initialForm, data_competencia: dateStr, data_prevista_pagamento: dateStr, forma_pagamento_id: defaultBankId });
           setEditingTxId(null);
           setIsModalOpen(true);
         }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all">➕ Novo Lançamento</button>
@@ -887,14 +902,14 @@ const handleLoadMore = () => {
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Banco / Conta</label>
-                          <select required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione banco...</option>{formasPagamento.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
+                          <select required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.forma_pagamento_id} onChange={e => setFormData({...formData, forma_pagamento_id: e.target.value})}><option value="">Selecione banco...</option>{formasSorted.map(fp => <option key={fp.id} value={fp.id}>{fp.nome}</option>)}</select>
                         </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Categoria</label>
-                          <select required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione...</option>{categorias.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
+                          <select required className="w-full bg-gray-50 p-3 rounded-xl text-xs font-black border border-gray-100" value={formData.categoria_id} onChange={e => setFormData({...formData, categoria_id: e.target.value, conta_contabil_id: ''})}><option value="">Selecione...</option>{categoriasSorted.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}</select>
                         </div>
                         <div className="space-y-1.5">
                           <label className="text-[10px] font-black uppercase text-bb-blue italic ml-2">Item Específico</label>
