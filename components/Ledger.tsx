@@ -11,6 +11,7 @@ import {
 import { listTransacoesPage, DEFAULT_HOUSEHOLD_ID } from '../lib/cloudStore';
 import { sortByNome } from '../lib/sortUtils';
 import { getDefaultBankId as getDefaultBankIdFromRules } from '../lib/financeDefaults';
+import { isCreditCardPaymentNames } from '../lib/financeRules';
 
 interface LedgerProps {
   viewMode: 'BR' | 'PT' | 'GLOBAL';
@@ -726,6 +727,23 @@ const canLoadMore = isCloud
   ? cloudHasMore
   : (Array.isArray(filteredTxs) ? filteredTxs.length : 0) > visibleTxs.length;
 
+// Sprint 2.6/2.8: indicador de página (local tem total; cloud só indica a página já carregada)
+const currentPage = useMemo(() => {
+  if (isCloud) {
+    const loaded = Array.isArray(cloudTxs) ? cloudTxs.length : 0;
+    const size = Math.max(1, Number(pageSize) || 20);
+    return Math.max(1, Math.ceil(loaded / size));
+  }
+  const shown = Array.isArray(visibleTxs) ? visibleTxs.length : 0;
+  return Math.max(1, Math.ceil(shown / PAGE_SIZE));
+}, [isCloud, cloudTxs, pageSize, visibleTxs]);
+
+const totalPagesLocal = useMemo(() => {
+  if (isCloud) return null;
+  const total = Array.isArray(filteredTxs) ? filteredTxs.length : 0;
+  return Math.max(1, Math.ceil(total / PAGE_SIZE));
+}, [isCloud, filteredTxs]);
+
 const handleLoadMore = () => {
   if (isCloud) {
     if (!cloudHasMore) return;
@@ -735,15 +753,42 @@ const handleLoadMore = () => {
   setVisibleCount((prev) => prev + PAGE_SIZE);
 };
 
+  // Totais (com regra: Pagamentos > Cartão de Crédito NÃO soma em despesas)
+  const computeStats = useCallback(
+    (list: Transacao[]) => {
+      const safeList = Array.isArray(list) ? list : [];
+      return safeList.reduce(
+        (acc, t) => {
+          const val = Number((t as any)?.valor ?? 0) || 0;
 
-  const stats = useMemo(() => {
-    return filteredTxs.reduce((acc, t) => {
-      const val = t.valor || 0;
-      if (t.tipo === TipoTransacao.RECEITA) acc.entradas += val;
-      else acc.saidas += val;
-      return acc;
-    }, { entradas: 0, saidas: 0 });
-  }, [filteredTxs]);
+          if ((t as any)?.tipo === TipoTransacao.RECEITA) {
+            acc.entradas += val;
+            return acc;
+          }
+
+          // DESPESA
+          const categoriaNome = (categoriasById.get((t as any)?.categoria_id)?.nome ?? '') as string;
+          const itemNome = (contasById.get((t as any)?.conta_contabil_id)?.nome ?? '') as string;
+
+          // Regra 1: não somar Pagamentos > Cartão de Crédito no total de despesas
+          // (independente do "tipo" armazenado, para evitar regressão em dados legados)
+          if (isCreditCardPaymentNames({ categoriaNome, itemNome })) {
+            return acc;
+          }
+
+          acc.saidas += val;
+          return acc;
+        },
+        { entradas: 0, saidas: 0 }
+      );
+    },
+    [categoriasById, contasById]
+  );
+
+  // “Visualizado” = até a página atual (local) / carregado (cloud)
+  const statsVisualizado = useMemo(() => computeStats(visibleTxs), [computeStats, visibleTxs]);
+  // “Geral” = total do período filtrado (apenas local possui tudo em memória; em cloud é o total carregado)
+  const statsGeral = useMemo(() => computeStats(filteredTxs), [computeStats, filteredTxs]);
 
   const getStatusStyle = (status: StatusTransacao) => {
     switch (status) {
@@ -759,16 +804,31 @@ const handleLoadMore = () => {
       {/* Resumo Rápido PHD */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm">
-          <p className="text-[9px] font-black text-emerald-600 uppercase italic tracking-widest mb-1">Total Entradas (Filtrado)</p>
-          <p className="text-2xl font-black text-bb-blue italic">{viewMode === 'PT' ? '€' : 'R$'} {stats.entradas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+          <p className="text-[9px] font-black text-emerald-600 uppercase italic tracking-widest mb-1">Total Entradas (Visualizado)</p>
+          <p className="text-2xl font-black text-bb-blue italic">{viewMode === 'PT' ? '€' : 'R$'} {statsVisualizado.entradas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+          {statsGeral.entradas !== statsVisualizado.entradas && (
+            <p className="mt-1 text-[10px] text-gray-400 font-bold italic tracking-widest">
+              Geral: {viewMode === 'PT' ? '€' : 'R$'} {statsGeral.entradas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </p>
+          )}
         </div>
         <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm">
-          <p className="text-[9px] font-black text-red-500 uppercase italic tracking-widest mb-1">Total Saídas (Filtrado)</p>
-          <p className="text-2xl font-black text-bb-blue italic">{viewMode === 'PT' ? '€' : 'R$'} {stats.saidas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+          <p className="text-[9px] font-black text-red-500 uppercase italic tracking-widest mb-1">Total Saídas (Visualizado)</p>
+          <p className="text-2xl font-black text-bb-blue italic">{viewMode === 'PT' ? '€' : 'R$'} {statsVisualizado.saidas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+          {statsGeral.saidas !== statsVisualizado.saidas && (
+            <p className="mt-1 text-[10px] text-gray-400 font-bold italic tracking-widest">
+              Geral: {viewMode === 'PT' ? '€' : 'R$'} {statsGeral.saidas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </p>
+          )}
         </div>
         <div className="bg-bb-blue p-6 rounded-[2rem] shadow-xl">
           <p className="text-[9px] font-black text-blue-200 uppercase italic tracking-widest mb-1">Saldo do Período</p>
-          <p className="text-2xl font-black text-white italic">{viewMode === 'PT' ? '€' : 'R$'} {(stats.entradas - stats.saidas).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+          <p className="text-2xl font-black text-white italic">{viewMode === 'PT' ? '€' : 'R$'} {(statsVisualizado.entradas - statsVisualizado.saidas).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+          {(statsGeral.entradas - statsGeral.saidas) !== (statsVisualizado.entradas - statsVisualizado.saidas) && (
+            <p className="mt-1 text-[10px] text-blue-200 font-bold italic tracking-widest">
+              Geral: {viewMode === 'PT' ? '€' : 'R$'} {(statsGeral.entradas - statsGeral.saidas).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </p>
+          )}
         </div>
       </div>
 
@@ -977,7 +1037,14 @@ const handleLoadMore = () => {
     {isCloud && cloudError && <span className="text-xs text-red-600">{cloudError}</span>}
   </div>
         <p className="text-xs text-gray-500">
-          Mostrando <span className="font-semibold">{visibleTxs.length}</span> de <span className="font-semibold">{filteredTxs.length}</span> lançamentos
+          Mostrando <span className="font-semibold">{visibleTxs.length}</span> de{' '}
+          <span className="font-semibold">{filteredTxs.length}</span> lançamentos — Página{' '}
+          <span className="font-semibold">{currentPage}</span>
+          {!isCloud && totalPagesLocal ? (
+            <>
+              {' '}de <span className="font-semibold">{totalPagesLocal}</span>
+            </>
+          ) : null}
         </p>
 
         {canLoadMore && (
