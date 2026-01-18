@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { doc, getDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, orderBy, query, where } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { DEFAULT_HOUSEHOLD_ID, listHouseholdItems, upsertHouseholdItem } from '../lib/cloudStore';
 import { CategoriaContabil, Receipt, Fornecedor, Transacao, TipoTransacao, FormaPagamento } from '../types';
@@ -161,14 +161,100 @@ const TaxReports: React.FC<TaxReportsProps> = ({
     return m;
   }, [fornecedores]);
 
+  /**
+   * IMPORTANTE (Hotfix): em modo cloud, o App carrega `receipts` via listHouseholdItems('receipts'),
+   * que força `id = docId`. Para Recibos, o docId é o `internal_id` (chave interna), enquanto o
+   * número fiscal (Nº Recibo/Fatura) está no campo `id` do payload.
+   * Resultado: no Cálculo de IVA a coluna "Fatura" acaba mostrando o docId.
+   *
+   * Para evitar regressão global, aqui buscamos os Recibos do período direto no Firestore,
+   * preservando o `id` do payload e mantendo `internal_id` como docId (para exclusões persistidas).
+   */
+  const [cloudReceiptsPeriodo, setCloudReceiptsPeriodo] = useState<Receipt[]>([]);
+  const [cloudReceiptsLoading, setCloudReceiptsLoading] = useState(false);
+  const [cloudReceiptsError, setCloudReceiptsError] = useState<string | null>(null);
+
+  const quarterRange = useMemo(() => {
+    // Q1: Jan-Mar, Q2: Apr-Jun, Q3: Jul-Sep, Q4: Oct-Dec
+    const startMonth = (Math.max(1, Math.min(4, filterQuarter)) - 1) * 3 + 1;
+    const endMonth = startMonth + 3;
+    const mm1 = String(startMonth).padStart(2, '0');
+    const mm2 = String(endMonth).padStart(2, '0');
+    const startDate = `${filterYear}-${mm1}-01`;
+    const endDate = endMonth === 13 ? `${filterYear + 1}-01-01` : `${filterYear}-${mm2}-01`;
+    return { startDate, endDate };
+  }, [filterYear, filterQuarter]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadReceiptsPeriodoCloud() {
+      if (!isCloud) {
+        setCloudReceiptsPeriodo([]);
+        setCloudReceiptsError(null);
+        setCloudReceiptsLoading(false);
+        return;
+      }
+      if (!householdId) return;
+
+      setCloudReceiptsLoading(true);
+      setCloudReceiptsError(null);
+      try {
+        const col = collection(db, `households/${householdId}/receipts`);
+        const q = query(
+          col,
+          where('country_code', '==', 'PT'),
+          where('issue_date', '>=', quarterRange.startDate),
+          where('issue_date', '<', quarterRange.endDate),
+          orderBy('issue_date', 'desc'),
+          orderBy('__name__', 'desc')
+        );
+
+        const snap = await getDocs(q);
+        const items = snap.docs.map((d) => {
+          const data: any = d.data() as any;
+          const internalId = String(data?.internal_id || d.id);
+          const fiscalId = String(data?.id || '');
+          // Mantém o contrato do app: internal_id é a chave interna; id é o nº fiscal (quando existir)
+          return {
+            ...(data as any),
+            internal_id: internalId,
+            id: fiscalId,
+          } as Receipt;
+        });
+
+        if (!cancelled) setCloudReceiptsPeriodo(items);
+      } catch (e) {
+        console.error('Falha ao carregar recibos do período (cloud) para IVA:', e);
+        if (!cancelled) {
+          setCloudReceiptsPeriodo([]);
+          setCloudReceiptsError('Falha ao carregar recibos do período.');
+        }
+      } finally {
+        if (!cancelled) setCloudReceiptsLoading(false);
+      }
+    }
+
+    loadReceiptsPeriodoCloud();
+    return () => {
+      cancelled = true;
+    };
+  }, [isCloud, householdId, filterYear, filterQuarter, quarterRange.startDate, quarterRange.endDate]);
+
   const receiptsDoPeriodo = useMemo(() => {
+    // Cloud: usa a busca dedicada (preserva nº fiscal em `id`)
+    if (isCloud) {
+      // fallback: se ainda não carregou, usa o array recebido (pode mostrar docId, mas mantém UI funcional)
+      if (cloudReceiptsPeriodo.length > 0) return cloudReceiptsPeriodo;
+    }
+
+    // Local: filtra em memória
     return receipts.filter((r) => {
       if (r.country_code !== 'PT') return false;
       const date = new Date(r.issue_date + 'T12:00:00');
       const q = Math.floor(date.getMonth() / 3) + 1;
       return date.getFullYear() === filterYear && q === filterQuarter;
     });
-  }, [receipts, filterYear, filterQuarter]);
+  }, [receipts, filterYear, filterQuarter, isCloud, cloudReceiptsPeriodo]);
 
   const ivaStats = useMemo(() => {
     const included = receiptsDoPeriodo.filter((r) => !excludedInternalIds.has(r.internal_id));
@@ -451,7 +537,15 @@ const TaxReports: React.FC<TaxReportsProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {receiptsDoPeriodo.map((r) => {
+                  {cloudReceiptsLoading && isCloud && (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-10 text-center text-xs text-gray-400 font-bold">
+                        Carregando recibos do período...
+                      </td>
+                    </tr>
+                  )}
+
+                  {!cloudReceiptsLoading && receiptsDoPeriodo.map((r) => {
                     const fornecedor = fornecedoresById.get(r.fornecedor_id);
                     const incluido = !excludedInternalIds.has(r.internal_id);
                     return (
@@ -464,7 +558,9 @@ const TaxReports: React.FC<TaxReportsProps> = ({
                             className="h-4 w-4 accent-bb-blue"
                           />
                         </td>
-                        <td className="px-6 py-4 font-black text-bb-blue">#{r.id}</td>
+                        <td className="px-6 py-4 font-black text-bb-blue">
+                          {String((r as any)?.id || '').trim() || '—'}
+                        </td>
                         <td className="px-6 py-4 text-gray-500 font-bold">
                           {fornecedor?.nome ?? fornecedor?.id ?? '—'}
                         </td>
@@ -478,10 +574,10 @@ const TaxReports: React.FC<TaxReportsProps> = ({
                       </tr>
                     );
                   })}
-                  {receiptsDoPeriodo.length === 0 && (
+                  {!cloudReceiptsLoading && receiptsDoPeriodo.length === 0 && (
                     <tr>
                       <td colSpan={6} className="px-6 py-10 text-center text-xs text-gray-400 font-bold">
-                        Sem recibos no período selecionado.
+                        {cloudReceiptsError ? cloudReceiptsError : 'Sem recibos no período selecionado.'}
                       </td>
                     </tr>
                   )}
