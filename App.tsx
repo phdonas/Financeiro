@@ -1316,6 +1316,7 @@ const handleAcceptInvite = useCallback(async () => {
             transacoes={transacoes}
             categorias={categorias}
             formasPagamento={formasPagamento}
+            txTemplates={txTemplates}
             onSave={onSaveTransacao}
             onDelete={onDeleteTransacao}
             isCloud={isCloud}

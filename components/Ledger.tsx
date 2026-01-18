@@ -1,16 +1,24 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
-import { Transacao, TipoTransacao, StatusTransacao, CategoriaContabil, FormaPagamento } from '../types';
+import {
+  Transacao,
+  TipoTransacao,
+  StatusTransacao,
+  CategoriaContabil,
+  FormaPagamento,
+  TransactionTemplate,
+} from '../types';
 import { listTransacoesPage, DEFAULT_HOUSEHOLD_ID } from '../lib/cloudStore';
 import { sortByNome } from '../lib/sortUtils';
 import { getDefaultBankId as getDefaultBankIdFromRules } from '../lib/financeDefaults';
-import { isCreditCardPaymentTx } from '../lib/financeRules';
 
 interface LedgerProps {
   viewMode: 'BR' | 'PT' | 'GLOBAL';
   transacoes: Transacao[];
   categorias: CategoriaContabil[];
   formasPagamento: FormaPagamento[];
+  /** Sprint TPL-2: templates de lançamento (configurados em Configurações). */
+  txTemplates?: TransactionTemplate[];
   onSave: (t: Transacao) => void | Promise<void>;
   onDelete: (id: string) => void;
   // Sprint 2.8: paginação real via Firestore quando em modo cloud
@@ -25,6 +33,7 @@ const Ledger: React.FC<LedgerProps> = ({
   transacoes = [],
   categorias = [],
   formasPagamento = [],
+  txTemplates = [],
   onSave,
   onDelete,
   isCloud = false,
@@ -39,36 +48,32 @@ const Ledger: React.FC<LedgerProps> = ({
   const categoriasSorted = useMemo(() => sortByNome(categorias, 'pt-BR'), [categorias]);
   const formasSorted = useMemo(() => sortByNome(formasPagamento, 'pt-BR'), [formasPagamento]);
 
-  // Sprint 2.6: maps para evitar .find() por linha (performance)
-  // IMPORTANTE: precisam ser declarados ANTES de qualquer useEffect/useMemo/useCallback
-  // que os referencie, para evitar erro de TDZ ("Cannot access before initialization").
-  const categoriasById = useMemo(() => {
-    const map = new Map<string, CategoriaContabil>();
-    (Array.isArray(categorias) ? categorias : []).forEach((c) => {
-      if (c?.id) map.set(c.id, c);
+  // Sprint TPL-2: templates (favoritos em destaque + dropdown para demais)
+  const templatesForView = useMemo(() => {
+    const arr = Array.isArray(txTemplates) ? txTemplates : [];
+    const filtered = arr.filter((t) => {
+      if (!t) return false;
+      if (viewMode === 'GLOBAL') return true;
+      return t.codigo_pais === viewMode;
     });
-    return map;
-  }, [categorias]);
+    const collator = new Intl.Collator('pt-BR', { sensitivity: 'base', numeric: true });
+    const sorted = [...filtered].sort((a, b) => {
+      const favA = !!a.favorito;
+      const favB = !!b.favorito;
+      if (favA !== favB) return favA ? -1 : 1;
+      const ordemA = typeof a.ordem === 'number' ? a.ordem : Number.POSITIVE_INFINITY;
+      const ordemB = typeof b.ordem === 'number' ? b.ordem : Number.POSITIVE_INFINITY;
+      if (ordemA !== ordemB) return ordemA - ordemB;
+      return collator.compare(a.nome || '', b.nome || '');
+    });
+    return {
+      all: sorted,
+      favoritos: sorted.filter((t) => !!t.favorito),
+      outros: sorted.filter((t) => !t.favorito),
+    };
+  }, [txTemplates, viewMode]);
 
-  const contasById = useMemo(() => {
-    const map = new Map<string, { nome?: string; categoriaNome?: string }>();
-    (Array.isArray(categorias) ? categorias : []).forEach((c) => {
-      const categoriaNome = c?.nome ?? '';
-      const contas = Array.isArray((c as any)?.contas) ? (c as any).contas : [];
-      contas.forEach((ct: any) => {
-        if (ct?.id) map.set(ct.id, { nome: ct?.nome, categoriaNome });
-      });
-    });
-    return map;
-  }, [categorias]);
-
-  const formasById = useMemo(() => {
-    const map = new Map<string, FormaPagamento>();
-    (Array.isArray(formasPagamento) ? formasPagamento : []).forEach((fp) => {
-      if (fp?.id) map.set(fp.id, fp);
-    });
-    return map;
-  }, [formasPagamento]);
+  const [templateSelectId, setTemplateSelectId] = useState<string>('');
 
   // Sprint 2.4: filtros por mês/ano + hardening contra dados incompletos
   // 0 significa "Todos"
@@ -87,14 +92,6 @@ const Ledger: React.FC<LedgerProps> = ({
   const [cloudHasMore, setCloudHasMore] = useState<boolean>(true);
   const [cloudLoading, setCloudLoading] = useState<boolean>(false);
   const [cloudError, setCloudError] = useState<string | null>(null);
-
-  // Sprint S2: totais do período (cloud) para comparar com o que já foi visualizado
-  const [cloudTotals, setCloudTotals] = useState<{ entradas: number; saidas: number } | null>(null);
-  const [cloudTotalsLoading, setCloudTotalsLoading] = useState<boolean>(false);
-  const [cloudTotalsError, setCloudTotalsError] = useState<string | null>(null);
-  // Sprint S3: total de lançamentos no período (para corrigir "Mostrando X de Y")
-  const [cloudTotalCount, setCloudTotalCount] = useState<number | null>(null);
-
   const effectiveHouseholdId = householdId ?? DEFAULT_HOUSEHOLD_ID;
   const cloudLoadingRef = useRef(false);
 
@@ -233,116 +230,6 @@ useEffect(() => {
   fetchCloudPage({ reset: true, cursor: null });
 }, [isCloud, effectiveHouseholdId, viewMode, monthFilter, yearFilter, pageSize, periodRange, dateRegime, refreshToken]);
 
-// Sprint S2: calcula totais do período (cloud) para comparar com o que já foi visualizado.
-// Observação: só calcula automaticamente quando há um período definido (mês/ano selecionados).
-useEffect(() => {
-  if (!isCloud) {
-    setCloudTotals(null);
-    setCloudTotalsLoading(false);
-    setCloudTotalsError(null);
-    setCloudTotalCount(null);
-    return;
-  }
-  if (!filtersHydratedRef.current) return;
-
-  // Guard rail: sem range (ex.: Todos os meses/anos) pode ficar muito pesado em bases grandes.
-  if (!periodRange?.startDate || !periodRange?.endDate) {
-    setCloudTotals(null);
-    setCloudTotalsLoading(false);
-    setCloudTotalsError(null);
-    setCloudTotalCount(null);
-    return;
-  }
-
-  let cancelled = false;
-
-  const run = async () => {
-    setCloudTotals(null);
-    setCloudTotalsError(null);
-    setCloudTotalsLoading(true);
-    setCloudTotalCount(null);
-
-    try {
-      const PAGE = 500;
-      const MAX_PAGES = 50; // proteção contra filtros muito amplos
-      let cursor: any = null;
-      let pages = 0;
-
-      const acc = { entradas: 0, saidas: 0 };
-      let count = 0;
-
-      const shouldExclude = (t: any) => {
-        const categoriaNome = categoriasById.get(t.categoria_id)?.nome ?? '';
-        const itemNome = (contasById.get(t.conta_contabil_id)?.nome ?? '') as any;
-        return isCreditCardPaymentTx(t as any, { categoriaNome, itemNome });
-      };
-
-      while (pages < MAX_PAGES) {
-        const res = await listTransacoesPage({
-          householdId: effectiveHouseholdId,
-          viewMode, // pode cair no fallback sem filtro por país; tratamos abaixo
-          pageSize: PAGE,
-          cursor,
-          startDate: periodRange.startDate,
-          endDate: periodRange.endDate,
-          dateField: dateRegime === 'CAIXA' ? 'data_prevista_pagamento' : 'data_competencia',
-        });
-
-        const items: any[] = Array.isArray(res?.items) ? (res.items as any[]) : [];
-        if (items.length === 0) break;
-
-        for (const t of items) {
-          // Fallback de índice pode retornar países adicionais; reforça filtro aqui.
-          if (viewMode !== 'GLOBAL' && t?.codigo_pais !== viewMode) continue;
-          if (catFilter && t?.categoria_id !== catFilter) continue;
-
-          // Sprint S3: conta total de lançamentos (após filtros) para corrigir o texto de paginação.
-          count += 1;
-
-          const val = Number(t?.valor || 0);
-          if (t?.tipo === TipoTransacao.RECEITA) {
-            acc.entradas += val;
-            continue;
-          }
-          // Despesa
-          if (shouldExclude(t)) continue;
-          acc.saidas += val;
-        }
-
-        if (!res?.hasMore) break;
-        cursor = res?.cursor ?? null;
-        pages += 1;
-      }
-
-      if (pages >= MAX_PAGES) {
-        setCloudTotalsError(
-          'Totais do período podem estar incompletos: há muitos lançamentos para o filtro atual. Selecione um mês/ano mais específico.'
-        );
-      }
-
-      if (!cancelled) {
-        setCloudTotals(acc);
-        setCloudTotalCount(count);
-      }
-    } catch (err: any) {
-      console.error('Falha ao calcular totais do período (cloud):', err);
-      if (!cancelled) {
-        setCloudTotalsError('Falha ao calcular Total Geral do período no modo nuvem. Veja o Console (DevTools).');
-        setCloudTotals(null);
-        setCloudTotalCount(null);
-      }
-    } finally {
-      if (!cancelled) setCloudTotalsLoading(false);
-    }
-  };
-
-  run();
-
-  return () => {
-        cancelled = true;
-  };
-}, [isCloud, effectiveHouseholdId, viewMode, catFilter, periodRange, dateRegime, categoriasById, contasById, refreshToken]);
-
 
   const parseYearMonth = (dateStr?: string) => {
     if (!dateStr || typeof dateStr !== 'string') return null;
@@ -440,6 +327,56 @@ useEffect(() => {
   const getDefaultBankId = useCallback(
     (country: 'PT' | 'BR') => getDefaultBankIdFromRules(formasPagamento, country),
     [formasPagamento]
+  );
+
+  // Sprint TPL-2: helpers para abrir "Novo Lançamento" já pré-preenchido
+  const getDefaultDateStrForNew = useCallback(() => {
+    const today = new Date();
+    const y = yearFilter || today.getFullYear();
+    const m = monthFilter || (today.getMonth() + 1);
+    const day = Math.min(today.getDate(), new Date(y, m, 0).getDate());
+    const yyyy = String(y).padStart(4, '0');
+    const mm = String(m).padStart(2, '0');
+    const dd = String(day).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }, [yearFilter, monthFilter]);
+
+  const openNewLaunch = useCallback(
+    (preset?: Partial<Transacao>) => {
+      const dateStr = getDefaultDateStrForNew();
+      const country = (preset?.codigo_pais ?? (viewMode === 'BR' ? 'BR' : 'PT')) as 'PT' | 'BR';
+      const defaultBankId = getDefaultBankId(country);
+      setFormData({
+        ...initialForm,
+        ...preset,
+        data_competencia: preset?.data_competencia ?? dateStr,
+        data_prevista_pagamento: preset?.data_prevista_pagamento ?? dateStr,
+        forma_pagamento_id: preset?.forma_pagamento_id || defaultBankId,
+        codigo_pais: country,
+      });
+      setEditingTxId(null);
+      setIsModalOpen(true);
+    },
+    [getDefaultDateStrForNew, getDefaultBankId, initialForm, viewMode]
+  );
+
+  const applyTemplateToNew = useCallback(
+    (tpl: TransactionTemplate) => {
+      if (!tpl) return;
+      openNewLaunch({
+        codigo_pais: tpl.codigo_pais,
+        tipo: tpl.tipo,
+        categoria_id: tpl.categoria_id,
+        conta_contabil_id: tpl.conta_contabil_id,
+        forma_pagamento_id: tpl.forma_pagamento_id,
+        // fornecedor_id existe no modelo, mas pode não ter UI neste momento
+        fornecedor_id: (tpl as any)?.fornecedor_id,
+        description: tpl.description_default ?? '',
+        observacao: tpl.observacao_default ?? '',
+        valor: typeof tpl.valor_default === 'number' ? tpl.valor_default : 0,
+      });
+    },
+    [openNewLaunch]
   );
 
   // Evita crash quando a categoria ainda não está selecionada
@@ -741,6 +678,37 @@ return filtered.sort((a, b) => {
   return db.localeCompare(da);
     });
   }, [isCloud, cloudTxs, transacoes, categorias, viewMode, catFilter, monthFilter, yearFilter, dateRegime, sortMode]);
+
+
+  // Sprint 2.6: maps para evitar .find() por linha (performance)
+  const categoriasById = useMemo(() => {
+    const map = new Map<string, CategoriaContabil>();
+    (Array.isArray(categorias) ? categorias : []).forEach((c) => {
+      if (c?.id) map.set(c.id, c);
+    });
+    return map;
+  }, [categorias]);
+
+  const contasById = useMemo(() => {
+    const map = new Map<string, { nome?: string; categoriaNome?: string }>();
+    (Array.isArray(categorias) ? categorias : []).forEach((c) => {
+      const categoriaNome = c?.nome ?? '';
+      const contas = Array.isArray((c as any)?.contas) ? (c as any).contas : [];
+      contas.forEach((ct: any) => {
+        if (ct?.id) map.set(ct.id, { nome: ct?.nome, categoriaNome });
+      });
+    });
+    return map;
+  }, [categorias]);
+
+  const formasById = useMemo(() => {
+    const map = new Map<string, FormaPagamento>();
+    (Array.isArray(formasPagamento) ? formasPagamento : []).forEach((fp) => {
+      if (fp?.id) map.set(fp.id, fp);
+    });
+    return map;
+  }, [formasPagamento]);
+
   const formatDateBR = (dateStr?: string) => {
     if (!dateStr || typeof dateStr !== 'string') return '';
     const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr);
@@ -758,19 +726,6 @@ const canLoadMore = isCloud
   ? cloudHasMore
   : (Array.isArray(filteredTxs) ? filteredTxs.length : 0) > visibleTxs.length;
 
-// Sprint S3: texto de paginação sem ambiguidade (Mostrando X de Y + página)
-const pagingInfo = useMemo(() => {
-  const shown = Array.isArray(visibleTxs) ? visibleTxs.length : 0;
-  const totalLocal = Array.isArray(filteredTxs) ? filteredTxs.length : 0;
-
-  const total = isCloud ? (typeof cloudTotalCount === 'number' ? cloudTotalCount : null) : totalLocal;
-  const perPage = isCloud ? Math.max(1, pageSize) : Math.max(1, PAGE_SIZE);
-  const page = Math.max(1, Math.ceil(shown / perPage));
-  const pages = typeof total === 'number' ? Math.max(1, Math.ceil(total / perPage)) : null;
-
-  return { shown, total, page, pages, perPage };
-}, [isCloud, visibleTxs, filteredTxs, cloudTotalCount, pageSize]);
-
 const handleLoadMore = () => {
   if (isCloud) {
     if (!cloudHasMore) return;
@@ -779,36 +734,16 @@ const handleLoadMore = () => {
   }
   setVisibleCount((prev) => prev + PAGE_SIZE);
 };
-  // Sprint S2: dois totais (Geral do período vs Visualizado) + Regra 1 (excluir pagamento de cartão nos totais)
-  const computeStats = (list: Transacao[]) => {
-    return (Array.isArray(list) ? list : []).reduce(
-      (acc, t) => {
-        const val = Number((t as any)?.valor || 0);
-        if ((t as any)?.tipo === TipoTransacao.RECEITA) {
-          acc.entradas += val;
-          return acc;
-        }
 
-        const categoriaNome = categoriasById.get((t as any)?.categoria_id)?.nome ?? '';
-        const itemNome = contasById.get((t as any)?.conta_contabil_id)?.nome ?? '';
 
-        // Regra 1: Pagamentos > Cartão de Crédito não entra no total de saídas
-        const exclude = isCreditCardPaymentTx(t as any, { categoriaNome, itemNome });
-        if (!exclude) acc.saidas += val;
-        return acc;
-      },
-      { entradas: 0, saidas: 0 }
-    );
-  };
-
-  const statsLoadedAll = useMemo(() => computeStats(filteredTxs), [filteredTxs, categoriasById, contasById]);
-  const statsVisualizado = useMemo(() => computeStats(visibleTxs), [visibleTxs, categoriasById, contasById]);
-
-  // No modo nuvem, statsLoadedAll pode ser apenas o que já foi carregado; cloudTotals tenta calcular o total real do período
-  const statsGeral = useMemo(() => {
-    if (!isCloud) return statsLoadedAll;
-    return cloudTotals ?? statsLoadedAll;
-  }, [isCloud, cloudTotals, statsLoadedAll]);
+  const stats = useMemo(() => {
+    return filteredTxs.reduce((acc, t) => {
+      const val = t.valor || 0;
+      if (t.tipo === TipoTransacao.RECEITA) acc.entradas += val;
+      else acc.saidas += val;
+      return acc;
+    }, { entradas: 0, saidas: 0 });
+  }, [filteredTxs]);
 
   const getStatusStyle = (status: StatusTransacao) => {
     switch (status) {
@@ -824,27 +759,22 @@ const handleLoadMore = () => {
       {/* Resumo Rápido PHD */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm">
-          <p className="text-[9px] font-black text-emerald-600 uppercase italic tracking-widest mb-1">Total Entradas</p>
-          <p className="text-2xl font-black text-bb-blue italic">{viewMode === 'PT' ? '€' : 'R$'} {statsGeral.entradas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-          <p className="text-[10px] text-gray-400 font-bold italic mt-2">Visualizado: {viewMode === 'PT' ? '€' : 'R$'} {statsVisualizado.entradas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}{isCloud && cloudTotalsLoading ? ' (calculando total geral...)' : ''}</p>
+          <p className="text-[9px] font-black text-emerald-600 uppercase italic tracking-widest mb-1">Total Entradas (Filtrado)</p>
+          <p className="text-2xl font-black text-bb-blue italic">{viewMode === 'PT' ? '€' : 'R$'} {stats.entradas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
         </div>
-
         <div className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm">
-          <p className="text-[9px] font-black text-red-500 uppercase italic tracking-widest mb-1">Total Saídas (sem Cartão)</p>
-          <p className="text-2xl font-black text-bb-blue italic">{viewMode === 'PT' ? '€' : 'R$'} {statsGeral.saidas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-          <p className="text-[10px] text-gray-400 font-bold italic mt-2">Visualizado: {viewMode === 'PT' ? '€' : 'R$'} {statsVisualizado.saidas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
+          <p className="text-[9px] font-black text-red-500 uppercase italic tracking-widest mb-1">Total Saídas (Filtrado)</p>
+          <p className="text-2xl font-black text-bb-blue italic">{viewMode === 'PT' ? '€' : 'R$'} {stats.saidas.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
         </div>
-
         <div className="bg-bb-blue p-6 rounded-[2rem] shadow-xl">
-          <p className="text-[9px] font-black text-blue-200 uppercase italic tracking-widest mb-1">Saldo</p>
-          <p className="text-2xl font-black text-white italic">{viewMode === 'PT' ? '€' : 'R$'} {(statsGeral.entradas - statsGeral.saidas).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-          <p className="text-[10px] text-blue-200 font-bold italic mt-2">Visualizado: {viewMode === 'PT' ? '€' : 'R$'} {(statsVisualizado.entradas - statsVisualizado.saidas).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
-          {(isCloud && cloudTotalsError) && <p className="text-[10px] text-red-200 font-bold italic mt-2">{cloudTotalsError}</p>}
+          <p className="text-[9px] font-black text-blue-200 uppercase italic tracking-widest mb-1">Saldo do Período</p>
+          <p className="text-2xl font-black text-white italic">{viewMode === 'PT' ? '€' : 'R$'} {(stats.entradas - stats.saidas).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</p>
         </div>
       </div>
 
       <div className="bg-white p-6 rounded-[1.5rem] shadow-sm border border-gray-100 flex flex-wrap justify-between items-center gap-4">
-        <div className="flex items-center gap-6">
+        <div className="flex flex-col gap-3 flex-1 min-w-[280px]">
+        <div className="flex items-center flex-wrap gap-6">
            <div>
               <h3 className="text-xl font-black text-bb-blue italic uppercase tracking-tighter leading-none">Extrato PHD</h3>
               <p className="text-[10px] text-gray-400 font-bold uppercase mt-1 italic tracking-widest">Auditoria e Conciliação</p>
@@ -899,21 +829,57 @@ const handleLoadMore = () => {
   <option value="DATA">Data ({dateRegime === 'CAIXA' ? 'Caixa' : 'Competência'})</option>
 </select>
         </div>
-        <button onClick={() => {
-          const today = new Date();
-          const y = yearFilter || today.getFullYear();
-          const m = monthFilter || (today.getMonth() + 1);
-          const day = Math.min(today.getDate(), new Date(y, m, 0).getDate());
-          const yyyy = String(y).padStart(4, '0');
-          const mm = String(m).padStart(2, '0');
-          const dd = String(day).padStart(2, '0');
-          const dateStr = `${yyyy}-${mm}-${dd}`;
-          const country = (viewMode === 'BR' ? 'BR' : 'PT') as 'PT' | 'BR';
-          const defaultBankId = getDefaultBankId(country);
-          setFormData({ ...initialForm, data_competencia: dateStr, data_prevista_pagamento: dateStr, forma_pagamento_id: defaultBankId });
-          setEditingTxId(null);
-          setIsModalOpen(true);
-        }} className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all">➕ Novo Lançamento</button>
+
+        {/* Sprint TPL-2: Templates (favoritos em destaque + dropdown para demais) */}
+        {editingTxId === null && templatesForView.all.length > 0 && (
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="text-[9px] font-black uppercase tracking-widest text-gray-400 italic">Templates:</div>
+
+            {templatesForView.favoritos.map((tpl) => (
+              <button
+                key={tpl.id}
+                onClick={() => applyTemplateToNew(tpl)}
+                className="px-4 py-2 rounded-xl bg-amber-50 text-bb-blue border border-amber-100 text-[10px] font-black uppercase tracking-wider hover:bg-amber-100 active:scale-95 transition-all"
+                title="Criar lançamento com este template"
+              >
+                ⭐ {tpl.nome}
+              </button>
+            ))}
+
+            {templatesForView.outros.length > 0 && (
+              <select
+                className="bg-gray-50 p-3 rounded-xl text-[10px] font-black uppercase tracking-[0.08em] text-bb-blue/80 appearance-none transition-all duration-200 ease border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
+                value={templateSelectId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setTemplateSelectId(id);
+                  const tpl = templatesForView.outros.find((t) => t.id === id);
+                  if (tpl) {
+                    applyTemplateToNew(tpl);
+                    // reseta para permitir selecionar novamente sem precisar trocar de opção
+                    setTemplateSelectId('');
+                  }
+                }}
+              >
+                <option value="">Mais templates…</option>
+                {templatesForView.outros.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>{tpl.nome}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+        </div>
+
+        <button
+          onClick={() => {
+            setTemplateSelectId('');
+            openNewLaunch();
+          }}
+          className="bg-bb-blue text-white px-8 py-3.5 rounded-xl text-[11px] font-black uppercase tracking-[0.1em] shadow-lg hover:scale-105 active:scale-95 transition-all"
+        >
+          ➕ Novo Lançamento
+        </button>
       </div>
 
       <div className="bg-white rounded-[1.5rem] shadow-sm border border-gray-100 overflow-hidden">
@@ -996,7 +962,7 @@ const handleLoadMore = () => {
   <div className="flex items-center gap-2">
     {isCloud && (
       <>
-        <span className="text-xs text-gray-500">Itens/página</span>
+        <span className="text-xs text-gray-500">Página</span>
         <select
           className="border rounded-lg px-2 py-1 text-xs"
           value={pageSize}
@@ -1011,23 +977,7 @@ const handleLoadMore = () => {
     {isCloud && cloudError && <span className="text-xs text-red-600">{cloudError}</span>}
   </div>
         <p className="text-xs text-gray-500">
-          Mostrando <span className="font-semibold">{pagingInfo.shown}</span>
-          {typeof pagingInfo.total === 'number' ? (
-            <>
-              {' '}lançamentos de <span className="font-semibold">{pagingInfo.total}</span>
-              {pagingInfo.pages ? (
-                <> • Página <span className="font-semibold">{pagingInfo.page}</span>/<span className="font-semibold">{pagingInfo.pages}</span></>
-              ) : (
-                <> • Página <span className="font-semibold">{pagingInfo.page}</span></>
-              )}
-            </>
-          ) : (
-            <>
-              {' '}lançamentos
-              {' '}• Página <span className="font-semibold">{pagingInfo.page}</span>
-              {isCloud && cloudTotalsLoading ? ' (calculando total...)' : ''}
-            </>
-          )}
+          Mostrando <span className="font-semibold">{visibleTxs.length}</span> de <span className="font-semibold">{filteredTxs.length}</span> lançamentos
         </p>
 
         {canLoadMore && (
