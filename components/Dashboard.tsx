@@ -131,6 +131,43 @@ function addMonths(d: Date, months: number): Date {
   return out;
 }
 
+function toRad(deg: number) {
+  return (deg * Math.PI) / 180;
+}
+
+function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
+  const a = toRad(angleDeg - 90);
+  return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+}
+
+function donutSegmentPath(
+  cx: number,
+  cy: number,
+  rOuter: number,
+  rInner: number,
+  startAngle: number,
+  endAngle: number
+) {
+  const startOuter = polarToCartesian(cx, cy, rOuter, startAngle);
+  const endOuter = polarToCartesian(cx, cy, rOuter, endAngle);
+  const startInner = polarToCartesian(cx, cy, rInner, endAngle);
+  const endInner = polarToCartesian(cx, cy, rInner, startAngle);
+  const largeArc = endAngle - startAngle <= 180 ? 0 : 1;
+
+  return [
+    `M ${startOuter.x.toFixed(3)} ${startOuter.y.toFixed(3)}`,
+    `A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${endOuter.x.toFixed(3)} ${endOuter.y.toFixed(3)}`,
+    `L ${startInner.x.toFixed(3)} ${startInner.y.toFixed(3)}`,
+    `A ${rInner} ${rInner} 0 ${largeArc} 0 ${endInner.x.toFixed(3)} ${endInner.y.toFixed(3)}`,
+    "Z",
+  ].join(" ");
+}
+
+function hslColor(i: number) {
+  const h = (i * 47) % 360;
+  return `hsl(${h} 70% 55%)`;
+}
+
 
 function monthKeyFromYM(ano: number, mes: number): MonthKey {
   return `${ano}-${pad2(mes)}` as MonthKey;
@@ -401,22 +438,14 @@ const modeLabel = useMemo(() => {
   }, [filteredTxs, viewMode, rates]);
 
   const trendByCategory = useMemo(() => {
-    // Tendência: média móvel simples dos últimos 3 meses (até o fim do período)
-    const end = resolvedPeriod.endMonth;
-    const [ey, em] = end.split("-").map((x) => Number(x));
-    const back: MonthKey[] = [];
-    for (let i = 0; i < 3; i++) {
-      let y = ey;
-      let m = em - i;
-      while (m <= 0) {
-        m += 12;
-        y -= 1;
-      }
-      back.push(monthKeyFromYM(y, m));
-    }
+    // Tendência: média dos últimos 3 meses ANTERIORES ao mês atual.
+    // Depois, escalamos para o período selecionado (nº de meses do período).
+    const nowMk = monthKeyFromDate(new Date());
+    const back: MonthKey[] = [addMonthsToKey(nowMk, -1), addMonthsToKey(nowMk, -2), addMonthsToKey(nowMk, -3)];
     const backSet = new Set(back);
-    const monthly: Map<string, Map<MonthKey, number>> = new Map();
 
+    // soma por categoria dentro dos 3 meses anteriores
+    const sums = new Map<string, number>();
     for (const t of txs) {
       if (String(t?.tipo ?? "") !== "DESPESA") continue;
       if (isCreditCardPayment(t)) continue;
@@ -433,21 +462,17 @@ const modeLabel = useMemo(() => {
       const cid = String(t?.categoria_id ?? "");
       if (!cid) continue;
       const v = getConverted(t?.valor, t?.codigo_pais);
-      if (!monthly.has(cid)) monthly.set(cid, new Map());
-      const inner = monthly.get(cid)!;
-      inner.set(mk, (inner.get(mk) ?? 0) + safeNum(v));
+      sums.set(cid, (sums.get(cid) ?? 0) + safeNum(v));
     }
 
     const out = new Map<string, number>();
     const monthsCount = Math.max(1, monthsInPeriod.length);
-    for (const [cid, mm] of monthly.entries()) {
-      const vals = back.map((k) => mm.get(k) ?? 0);
-      const denom = Math.max(1, vals.filter((x) => x !== 0).length);
-      const avg = vals.reduce((a, b) => a + b, 0) / denom;
+    for (const [cid, sum3] of sums.entries()) {
+      const avg = sum3 / 3; // sempre 3 meses
       out.set(cid, avg * monthsCount);
     }
     return out;
-  }, [txs, viewMode, resolvedPeriod.endMonth, monthsInPeriod, rates]);
+  }, [txs, viewMode, monthsInPeriod, rates]);
 
   const tableRows = useMemo(() => {
     const set = new Set<string>();
@@ -479,12 +504,34 @@ const modeLabel = useMemo(() => {
     return withPct.slice(0, 5);
   }, [tableRows]);
 
-  const maxRef = useMemo(() => {
-    let mx = 0;
-    for (const r of tableRows) {
-      mx = Math.max(mx, Math.abs(r.real), Math.abs(r.orc), Math.abs(r.trend));
+  const totalsRow = useMemo(() => {
+    const totalReal = tableRows.reduce((a, r) => a + safeNum(r.real), 0);
+    const totalOrc = tableRows.reduce((a, r) => a + safeNum(r.orc), 0);
+    const totalTrend = tableRows.reduce((a, r) => a + safeNum(r.trend), 0);
+    const totalDiff = totalReal - totalOrc;
+    const totalPct = totalOrc ? (totalDiff / totalOrc) * 100 : null;
+    return { totalReal, totalOrc, totalTrend, totalDiff, totalPct };
+  }, [tableRows]);
+
+  type DonutRow = { cid: string; nome: string; real: number };
+  const donutData = useMemo((): { rows: DonutRow[]; total: number } => {
+    // Usamos o Real por categoria no período selecionado.
+    const rows = tableRows
+      .filter((r) => safeNum(r.real) > 0)
+      .slice()
+      .sort((a, b) => b.real - a.real)
+      .map((r) => ({ cid: r.cid, nome: r.nome, real: safeNum(r.real) }));
+
+    // Para manter legibilidade, agrupamos tudo além do Top 12 em "Outros".
+    const limit = 12;
+    if (rows.length <= limit) {
+      return { rows, total: rows.reduce((a, r) => a + safeNum(r.real), 0) };
     }
-    return mx || 1;
+    const top = rows.slice(0, limit);
+    const rest = rows.slice(limit);
+    const restSum = rest.reduce((a, r) => a + safeNum(r.real), 0);
+    const out: DonutRow[] = [...top, { cid: "__OUTROS__", nome: "Outros", real: restSum }];
+    return { rows: out, total: out.reduce((a, r) => a + safeNum(r.real), 0) };
   }, [tableRows]);
 
   const drillItems = useMemo(() => {
@@ -696,6 +743,149 @@ const modeLabel = useMemo(() => {
 
       {!selectedCatId ? (
         <>
+
+          {/* 1) ORÇAMENTO */}
+          <div className="bg-white p-6 rounded-[2rem] border shadow-sm">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h3 className="text-sm font-black uppercase text-bb-blue">Orçamento (Real x Orçado x Tendência)</h3>
+                <p className="text-[11px] text-gray-500 font-semibold mt-1">
+                  Clique na categoria para ver o detalhamento por item. Tendência = média dos 3 meses anteriores ao mês atual, escalada ao período.
+                </p>
+              </div>
+
+              <div className="text-[11px] text-gray-500 font-semibold">
+                <span className="mr-3">Total Geral:</span>
+                <span className="mr-3">Real <b>{fmtMoney(totalsRow.totalReal, viewMode)}</b></span>
+                <span className="mr-3">Orçado <b>{fmtMoney(totalsRow.totalOrc, viewMode)}</b></span>
+                <span className="mr-3">Tendência <b>{fmtMoney(totalsRow.totalTrend, viewMode)}</b></span>
+                <span>Desvio <b className={totalsRow.totalDiff >= 0 ? "text-red-600" : "text-green-600"}>{fmtMoney(totalsRow.totalDiff, viewMode)}</b></span>
+              </div>
+            </div>
+
+            <div className="mt-4 overflow-auto">
+              <table className="w-full text-left text-[12px]">
+                <thead className="text-[10px] uppercase text-gray-500">
+                  <tr>
+                    <th className="py-2">Categoria</th>
+                    <th className="py-2 text-right">Real</th>
+                    <th className="py-2 text-right">Orçado</th>
+                    <th className="py-2 text-right">Tendência</th>
+                    <th className="py-2 text-right">Desvio</th>
+                    <th className="py-2 text-right">%</th>
+                    <th className="py-2">Gráfico (base 100)</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {tableRows.length === 0 ? (
+                    <tr>
+                      <td className="py-6 text-gray-500" colSpan={7}>
+                        Sem dados no período.
+                      </td>
+                    </tr>
+                  ) : (
+                    tableRows.map((r, idx) => {
+                      const hasOrc = safeNum(r.orc) > 0;
+                      const realPct = hasOrc ? (safeNum(r.real) / safeNum(r.orc)) * 100 : null;
+                      const trendPct = hasOrc ? (safeNum(r.trend) / safeNum(r.orc)) * 100 : null;
+                      const diffPct = hasOrc ? (safeNum(r.diff) / safeNum(r.orc)) * 100 : null;
+
+                      const trackW = 120;
+                      const baseX = (100 / 200) * trackW; // 100% dentro de 0..200
+
+                      const barFromBase100 = (pct: number | null) => {
+                        if (pct === null) return { left: 0, width: 0 };
+                        const p = clamp(pct, 0, 200);
+                        const x = (p / 200) * trackW;
+                        const left = Math.min(baseX, x);
+                        const width = Math.abs(x - baseX);
+                        return { left, width };
+                      };
+
+                      const barFromZero = (pct: number | null) => {
+                        if (pct === null) return { left: 0, width: 0 };
+                        const p = clamp(pct, -100, 100);
+                        const x = ((p + 100) / 200) * trackW;
+                        const left = Math.min(baseX, x);
+                        const width = Math.abs(x - baseX);
+                        return { left, width };
+                      };
+
+                      const bReal = barFromBase100(realPct);
+                      const bTrend = barFromBase100(trendPct);
+                      const bDiff = barFromZero(diffPct);
+
+                      return (
+                        <tr key={r.cid} className="border-t hover:bg-gray-50">
+                          <td className="py-3 font-semibold">
+                            <button type="button" onClick={() => setSelectedCatId(r.cid)} className="text-left hover:underline">
+                              {r.nome}
+                            </button>
+                          </td>
+                          <td className="py-3 text-right">{fmtMoney(r.real, viewMode)}</td>
+                          <td className="py-3 text-right">{fmtMoney(r.orc, viewMode)}</td>
+                          <td className="py-3 text-right">{fmtMoney(r.trend, viewMode)}</td>
+                          <td className={`py-3 text-right font-black ${r.diff >= 0 ? "text-red-600" : "text-green-600"}`}>{fmtMoney(r.diff, viewMode)}</td>
+                          <td className="py-3 text-right text-gray-600 font-semibold">{r.pct === null ? "–" : `${r.pct.toFixed(1)}%`}</td>
+                          <td className="py-3">
+                            <div className="space-y-1" title={hasOrc ? "Base 100 = Orçado" : "Sem orçado (base 100 indisponível)"}>
+                              <div className="flex items-center gap-2">
+                                <div className="w-12 text-[10px] uppercase font-black text-gray-500">Real</div>
+                                <div className="relative h-2 rounded bg-gray-200" style={{ width: trackW }}>
+                                  <div className="absolute top-0 bottom-0 w-[2px] bg-gray-400" style={{ left: baseX }} />
+                                  <div className="absolute top-0 bottom-0 rounded bg-blue-400" style={{ left: bReal.left, width: bReal.width }} />
+                                </div>
+                                <div className="w-14 text-right text-[10px] font-black text-gray-600">{realPct === null ? "–" : `${realPct.toFixed(0)}%`}</div>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <div className="w-12 text-[10px] uppercase font-black text-gray-500">Desvio</div>
+                                <div className="relative h-2 rounded bg-gray-200" style={{ width: trackW }}>
+                                  <div className="absolute top-0 bottom-0 w-[2px] bg-gray-400" style={{ left: baseX }} />
+                                  <div
+                                    className={`absolute top-0 bottom-0 rounded ${safeNum(r.diff) >= 0 ? "bg-red-400" : "bg-green-500"}`}
+                                    style={{ left: bDiff.left, width: bDiff.width }}
+                                  />
+                                </div>
+                                <div className="w-14 text-right text-[10px] font-black text-gray-600">{diffPct === null ? "–" : `${diffPct.toFixed(0)}%`}</div>
+                              </div>
+
+                              <div className="flex items-center gap-2">
+                                <div className="w-12 text-[10px] uppercase font-black text-gray-500">Tend.</div>
+                                <div className="relative h-2 rounded bg-gray-200" style={{ width: trackW }}>
+                                  <div className="absolute top-0 bottom-0 w-[2px] bg-gray-400" style={{ left: baseX }} />
+                                  <div className="absolute top-0 bottom-0 rounded bg-emerald-400" style={{ left: bTrend.left, width: bTrend.width }} />
+                                </div>
+                                <div className="w-14 text-right text-[10px] font-black text-gray-600">{trendPct === null ? "–" : `${trendPct.toFixed(0)}%`}</div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+
+                {/* Linha adicional solicitada: Total Geral */}
+                {tableRows.length > 0 && (
+                  <tfoot>
+                    <tr className="border-t bg-gray-50">
+                      <td className="py-3 font-black uppercase text-bb-blue">Total Geral</td>
+                      <td className="py-3 text-right font-black">{fmtMoney(totalsRow.totalReal, viewMode)}</td>
+                      <td className="py-3 text-right font-black">{fmtMoney(totalsRow.totalOrc, viewMode)}</td>
+                      <td className="py-3 text-right font-black">{fmtMoney(totalsRow.totalTrend, viewMode)}</td>
+                      <td className={`py-3 text-right font-black ${totalsRow.totalDiff >= 0 ? "text-red-600" : "text-green-600"}`}>{fmtMoney(totalsRow.totalDiff, viewMode)}</td>
+                      <td className="py-3 text-right font-black text-gray-700">{totalsRow.totalPct === null ? "–" : `${totalsRow.totalPct.toFixed(1)}%`}</td>
+                      <td className="py-3" />
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+
+          {/* 2) TOP DESVIOS */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div className="bg-white p-6 rounded-[2rem] border shadow-sm">
               <h3 className="text-sm font-black uppercase text-bb-blue">Top desvios (valor)</h3>
@@ -706,9 +896,7 @@ const modeLabel = useMemo(() => {
                   topAbs.map((r) => (
                     <div key={`abs-${r.cid}`} className="flex items-center justify-between gap-3">
                       <div className="text-[12px] font-semibold text-gray-700 truncate">{r.nome}</div>
-                      <div className={`text-[12px] font-black ${r.diff >= 0 ? "text-red-600" : "text-green-600"}`}>
-                        {fmtMoney(r.diff, viewMode)}
-                      </div>
+                      <div className={`text-[12px] font-black ${r.diff >= 0 ? "text-red-600" : "text-green-600"}`}>{fmtMoney(r.diff, viewMode)}</div>
                     </div>
                   ))
                 )}
@@ -728,9 +916,7 @@ const modeLabel = useMemo(() => {
                       onClick={() => setSelectedCatId(r.cid)}
                     >
                       <div className="text-[12px] font-semibold text-gray-700 truncate">{r.nome}</div>
-                      <div className={`text-[12px] font-black ${(r.pct ?? 0) >= 0 ? "text-red-600" : "text-green-600"}`}>
-                        {((r.pct ?? 0)).toFixed(1)}%
-                      </div>
+                      <div className={`text-[12px] font-black ${(r.pct ?? 0) >= 0 ? "text-red-600" : "text-green-600"}`}>{(r.pct ?? 0).toFixed(1)}%</div>
                     </div>
                   ))
                 )}
@@ -738,7 +924,8 @@ const modeLabel = useMemo(() => {
             </div>
           </div>
 
-                    <div className="bg-white p-6 rounded-[2rem] border shadow-sm">
+          {/* 3) PROJEÇÃO DE CAIXA */}
+          <div className="bg-white p-6 rounded-[2rem] border shadow-sm">
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div>
                 <h3 className="text-sm font-black uppercase text-bb-blue">Projeção de caixa</h3>
@@ -770,20 +957,8 @@ const modeLabel = useMemo(() => {
                 <div className="text-[12px] text-gray-500 font-semibold">Sem dados para projetar.</div>
               ) : (
                 <div className="w-full overflow-x-auto">
-                  <svg
-                    viewBox="0 0 520 120"
-                    width="100%"
-                    height="120"
-                    className="rounded-xl bg-gray-50 border"
-                    preserveAspectRatio="none"
-                  >
-                    <polyline
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      className="text-bb-blue"
-                      points={projectionChart.points}
-                    />
+                  <svg viewBox="0 0 520 120" width="100%" height="120" className="rounded-xl bg-gray-50 border" preserveAspectRatio="none">
+                    <polyline fill="none" stroke="currentColor" strokeWidth="2" className="text-bb-blue" points={projectionChart.points} />
                   </svg>
                 </div>
               )}
@@ -812,81 +987,106 @@ const modeLabel = useMemo(() => {
               </table>
             </div>
           </div>
-<div className="bg-white p-6 rounded-[2rem] border shadow-sm">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
+
+          {/* 4) ROSCA POR CATEGORIA */}
+          <div className="bg-white p-6 rounded-[2rem] border shadow-sm">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
               <div>
-                <h3 className="text-sm font-black uppercase text-bb-blue">Orçamento (Real x Orçado x Tendência)</h3>
-                <p className="text-[11px] text-gray-500 font-semibold mt-1">
-                  Clique na categoria para ver o detalhamento por item.
-                </p>
+                <h3 className="text-sm font-black uppercase text-bb-blue">Despesas por categoria (rosca)</h3>
+                <p className="text-[11px] text-gray-500 font-semibold mt-1">Período: <b>{periodLabel}</b> · clique na categoria para drilldown.</p>
               </div>
             </div>
 
-            <div className="mt-4 overflow-auto">
-              <table className="w-full text-left text-[12px]">
-                <thead className="text-[10px] uppercase text-gray-500">
-                  <tr>
-                    <th className="py-2">Categoria</th>
-                    <th className="py-2 text-right">Real</th>
-                    <th className="py-2 text-right">Orçado</th>
-                    <th className="py-2 text-right">Tendência</th>
-                    <th className="py-2 text-right">Desvio</th>
-                    <th className="py-2 text-right">%</th>
-                    <th className="py-2">Gráfico</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {tableRows.length === 0 ? (
-                    <tr>
-                      <td className="py-6 text-gray-500" colSpan={7}>
-                        Sem dados no período.
-                      </td>
-                    </tr>
-                  ) : (
-                    tableRows.map((r) => {
-                      const wReal = clamp((Math.abs(r.real) / maxRef) * 120, 0, 120);
-                      const wOrc = clamp((Math.abs(r.orc) / maxRef) * 120, 0, 120);
-                      const wTrend = clamp((Math.abs(r.trend) / maxRef) * 120, 0, 120);
-                      return (
-                        <tr key={r.cid} className="border-t hover:bg-gray-50">
-                          <td className="py-3 font-semibold">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedCatId(r.cid)}
-                              className="text-left hover:underline"
-                            >
-                              {r.nome}
-                            </button>
-                          </td>
-                          <td className="py-3 text-right">{fmtMoney(r.real, viewMode)}</td>
-                          <td className="py-3 text-right">{fmtMoney(r.orc, viewMode)}</td>
-                          <td className="py-3 text-right">{fmtMoney(r.trend, viewMode)}</td>
-                          <td className={`py-3 text-right font-black ${r.diff >= 0 ? "text-red-600" : "text-green-600"}`}>
-                            {fmtMoney(r.diff, viewMode)}
-                          </td>
-                          <td className="py-3 text-right text-gray-600 font-semibold">
-                            {r.pct === null ? "–" : `${r.pct.toFixed(1)}%`}
-                          </td>
-                          <td className="py-3">
-                            <div className="flex items-center gap-1">
-                              <div className="h-2 rounded bg-gray-200" style={{ width: 120 }}>
-                                <div className="h-2 rounded bg-blue-300" style={{ width: wReal }} />
-                              </div>
-                              <div className="h-2 rounded bg-gray-200" style={{ width: 120 }}>
-                                <div className="h-2 rounded bg-yellow-300" style={{ width: wOrc }} />
-                              </div>
-                              <div className="h-2 rounded bg-gray-200" style={{ width: 120 }}>
-                                <div className="h-2 rounded bg-green-300" style={{ width: wTrend }} />
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
+            {donutData.total <= 0 ? (
+              <div className="mt-4 text-[12px] text-gray-500 font-semibold">Sem despesas no período.</div>
+            ) : (
+              <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                <div className="w-full flex justify-center">
+                  {(() => {
+                    const rows = donutData.rows;
+                    const total = donutData.total;
+                    const cx = 140;
+                    const cy = 140;
+                    const rOuter = 110;
+                    const rInner = 70;
+
+                    let acc = 0;
+                    const segs = rows.map((r, i) => {
+                      const v = safeNum(r.real);
+                      const start = acc * 360;
+                      acc += v / total;
+                      const end = acc * 360;
+                      const color = hslColor(i);
+                      const path = donutSegmentPath(cx, cy, rOuter, rInner, start, end);
+                      const pct = (v / total) * 100;
+                      return { cid: r.cid, nome: r.nome, v, pct, color, path };
+                    });
+
+                    return (
+                      <svg viewBox="0 0 280 280" width="280" height="280" className="rounded-2xl bg-gray-50 border">
+                        {/* leve efeito 3D/sombra */}
+                        <g transform="translate(0,4)" opacity="0.18">
+                          {segs.map((s) => (
+                            <path key={`shadow-${s.cid}`} d={s.path} fill="#000" />
+                          ))}
+                        </g>
+
+                        {segs.map((s, idx) => (
+                          <path
+                            key={`seg-${s.cid}-${idx}`}
+                            d={s.path}
+                            fill={s.color}
+                            stroke="white"
+                            strokeWidth="2"
+                            className={s.cid !== "__OUTROS__" ? "cursor-pointer" : ""}
+                            onClick={() => {
+                              if (s.cid !== "__OUTROS__") setSelectedCatId(s.cid);
+                            }}
+                          >
+                            <title>{`${s.nome}: ${fmtMoney(s.v, viewMode)} (${s.pct.toFixed(1)}%)`}</title>
+                          </path>
+                        ))}
+
+                        {/* centro */}
+                        <circle cx={cx} cy={cy} r={rInner - 6} fill="white" />
+                        <text x={cx} y={cy - 4} textAnchor="middle" className="fill-gray-700" style={{ fontSize: 12, fontWeight: 800 }}>
+                          TOTAL
+                        </text>
+                        <text x={cx} y={cy + 18} textAnchor="middle" className="fill-gray-900" style={{ fontSize: 14, fontWeight: 900 }}>
+                          {fmtMoney(total, viewMode)}
+                        </text>
+                      </svg>
+                    );
+                  })()}
+                </div>
+
+                <div className="space-y-2">
+                  {donutData.rows.map((r, i) => {
+                    const v = safeNum(r.real);
+                    const pct = donutData.total ? (v / donutData.total) * 100 : 0;
+                    const color = hslColor(i);
+                    const clickable = r.cid !== "__OUTROS__";
+                    return (
+                      <div
+                        key={`legend-${r.cid}`}
+                        className={`flex items-center justify-between gap-3 rounded-lg px-2 py-1 ${clickable ? "cursor-pointer hover:bg-gray-50" : ""}`}
+                        onClick={() => {
+                          if (clickable) setSelectedCatId(r.cid);
+                        }}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="inline-block w-3 h-3 rounded" style={{ background: color }} />
+                          <span className="text-[12px] font-semibold text-gray-700 truncate">{r.nome}</span>
+                        </div>
+                        <div className="text-[12px] font-black text-gray-700 whitespace-nowrap">
+                          {pct.toFixed(1)}% · {fmtMoney(v, viewMode)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         </>
       ) : (
