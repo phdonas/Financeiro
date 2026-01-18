@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { TipoTransacao, InssYearlyConfig } from "../types";
-import type { Orcamento as OrcamentoModel } from "../types";
+import type { Orcamento as OrcamentoModel, TransactionTemplate as TxTemplateModel } from "../types";
 
 type CountryCode = "PT" | "BR";
 
@@ -39,11 +39,14 @@ type Fornecedor = {
 
 type Orcamento = OrcamentoModel;
 
+type TxTemplate = TxTemplateModel;
+
 interface SettingsProps {
   categorias: Categoria[];
   formasPagamento: FormaPagamento[];
   fornecedores: Fornecedor[];
   orcamentos: Orcamento[];
+  txTemplates: TxTemplate[];
 
   onSaveCategoria: (c: Categoria) => void;
   onDeleteCategoria: (id: string) => void;
@@ -56,6 +59,10 @@ interface SettingsProps {
 
   onSaveOrcamento: (o: Orcamento) => void;
   onDeleteOrcamento: (id: string) => void;
+
+  // Sprint TPL-1 — Templates de Lançamento
+  onSaveTxTemplate: (tpl: TxTemplate) => void | Promise<void>;
+  onDeleteTxTemplate: (id: string) => void | Promise<void>;
 
   // Sprint 4.2 — INSS
   inssConfigs: (InssYearlyConfig & { id?: string })[];
@@ -106,6 +113,7 @@ const Settings: React.FC<SettingsProps> = ({
   formasPagamento,
   fornecedores,
   orcamentos,
+  txTemplates,
   inssConfigs,
   onSaveCategoria,
   onDeleteCategoria,
@@ -115,10 +123,14 @@ const Settings: React.FC<SettingsProps> = ({
   onDeleteFornecedor,
   onSaveOrcamento,
   onDeleteOrcamento,
+  onSaveTxTemplate,
+  onDeleteTxTemplate,
   onSaveInssConfig,
   onDeleteInssConfig,
 }) => {
-  const [tab, setTab] = useState<"CATEGORIAS" | "PAGAMENTO" | "FORNECEDORES" | "ORCAMENTO" | "INSS">("CATEGORIAS");
+  const [tab, setTab] = useState<"CATEGORIAS" | "PAGAMENTO" | "FORNECEDORES" | "ORCAMENTO" | "TEMPLATES" | "INSS">(
+    "CATEGORIAS"
+  );
 
   // --- Modals state ---
   const [catOpen, setCatOpen] = useState(false);
@@ -128,8 +140,10 @@ const Settings: React.FC<SettingsProps> = ({
   const [supOpen, setSupOpen] = useState(false);
   const [orcOpen, setOrcOpen] = useState(false);
   const [inssOpen, setInssOpen] = useState(false);
+  const [tplOpen, setTplOpen] = useState(false);
 
   const [catMode, setCatMode] = useState<"NEW" | "EDIT">("NEW");
+  const [tplMode, setTplMode] = useState<"NEW" | "EDIT">("NEW");
   const [inssMode, setInssMode] = useState<"NEW" | "EDIT">("NEW");
 
   const [catForm, setCatForm] = useState<Categoria>({
@@ -143,6 +157,26 @@ const Settings: React.FC<SettingsProps> = ({
   const [itemForm, setItemForm] = useState<ContaItem>({ id: "", nome: "", codigo_pais: "PT" });
   const [fpForm, setFpForm] = useState<FormaPagamento>({ id: "", nome: "", categoria: "BANCO", countryCode: "PT" });
   const [supForm, setSupForm] = useState<Fornecedor>({ id: "", nome: "", countryCode: "PT" });
+
+  // Templates: filtros + formulário
+  const [tplFilterPais, setTplFilterPais] = useState<CountryCode | "ALL">("PT");
+  const [tplSearch, setTplSearch] = useState<string>("");
+  const [tplError, setTplError] = useState<string>("");
+  const [tplForm, setTplForm] = useState<TxTemplate>(() => ({
+    id: "",
+    nome: "",
+    favorito: true,
+    codigo_pais: "PT",
+    tipo: TipoTransacao.DESPESA,
+    categoria_id: "",
+    conta_contabil_id: "",
+    forma_pagamento_id: "",
+    fornecedor_id: undefined,
+    description_default: "",
+    observacao_default: "",
+    valor_default: undefined,
+    ordem: undefined,
+  } as any));
   const now = new Date();
   const [orcMode, setOrcMode] = useState<"NEW" | "EDIT">("NEW");
   const [orcFilterPais, setOrcFilterPais] = useState<CountryCode>("PT");
@@ -179,6 +213,18 @@ const Settings: React.FC<SettingsProps> = ({
     categorias.forEach((c) => m.set(c.id, c));
     return m;
   }, [categorias]);
+
+  const formasById = useMemo(() => {
+    const m = new Map<string, FormaPagamento>();
+    formasPagamento.forEach((fp) => m.set(fp.id, fp));
+    return m;
+  }, [formasPagamento]);
+
+  const fornecedoresById = useMemo(() => {
+    const m = new Map<string, Fornecedor>();
+    fornecedores.forEach((f) => m.set(f.id, f));
+    return m;
+  }, [fornecedores]);
 
   const contasByCategoriaId = useMemo(() => {
     const m = new Map<string, Map<string, string>>();
@@ -298,6 +344,79 @@ const Settings: React.FC<SettingsProps> = ({
     return Array.isArray(contas) ? (contas as ContaItem[]) : [];
   }, [selectedCategoria]);
 
+  // -------------------- Templates helpers --------------------
+  const getEntityCountry = (obj: any): CountryCode => {
+    const anyO = obj as any;
+    return (anyO?.countryCode ?? anyO?.pais ?? anyO?.codigo_pais ?? anyO?.country_code ?? "PT") as CountryCode;
+  };
+
+  const tplCategoriasOptions = useMemo(() => {
+    const pais = (tplForm as any)?.codigo_pais || "PT";
+    return (categorias || [])
+      .filter((c) => getEntityCountry(c) === pais)
+      .slice()
+      .sort((a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt"));
+  }, [categorias, tplForm]);
+
+  const tplItensOptions = useMemo(() => {
+    const cat = categoriasById.get(String((tplForm as any)?.categoria_id || ""));
+    const contas = Array.isArray((cat as any)?.contas) ? ((cat as any).contas as ContaItem[]) : [];
+    const pais = (tplForm as any)?.codigo_pais || "PT";
+    return contas
+      .filter((it) => String((it as any)?.codigo_pais || pais) === pais)
+      .slice()
+      .sort((a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt"));
+  }, [tplForm, categoriasById]);
+
+  const tplFormasOptions = useMemo(() => {
+    const pais = (tplForm as any)?.codigo_pais || "PT";
+    return (formasPagamento || [])
+      .filter((fp) => getEntityCountry(fp) === pais)
+      .slice()
+      .sort((a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt"));
+  }, [formasPagamento, tplForm]);
+
+  const tplFornecedoresOptions = useMemo(() => {
+    const pais = (tplForm as any)?.codigo_pais || "PT";
+    return (fornecedores || [])
+      .filter((f) => getEntityCountry(f) === pais)
+      .slice()
+      .sort((a, b) => String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt"));
+  }, [fornecedores, tplForm]);
+
+  const templatesFiltered = useMemo(() => {
+    const q = String(tplSearch || "").trim().toLowerCase();
+    const pais = tplFilterPais;
+    const list = (txTemplates || []).slice().filter((t: any) => {
+      if (pais !== "ALL" && String(t?.codigo_pais || "PT") !== pais) return false;
+      if (!q) return true;
+      const cat = categoriasById.get(String(t?.categoria_id || ""));
+      const catNome = String((cat as any)?.nome || "");
+      const itemNome =
+        contasByCategoriaId.get(String(t?.categoria_id || ""))?.get(String(t?.conta_contabil_id || "")) || "";
+      const supNome = String((fornecedoresById.get(String(t?.fornecedor_id || "")) as any)?.nome || "");
+      const fpNome = String((formasById.get(String(t?.forma_pagamento_id || "")) as any)?.nome || "");
+      const hay = [t?.nome, catNome, itemNome, supNome, fpNome, t?.description_default]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+
+    // favoritos primeiro, depois ordem (se existir), depois nome
+    list.sort((a: any, b: any) => {
+      const af = !!a?.favorito;
+      const bf = !!b?.favorito;
+      if (af !== bf) return af ? -1 : 1;
+      const ao = Number(a?.ordem ?? 0);
+      const bo = Number(b?.ordem ?? 0);
+      if (bo !== ao) return ao - bo;
+      return String(a?.nome || "").localeCompare(String(b?.nome || ""), "pt");
+    });
+
+    return list;
+  }, [txTemplates, tplFilterPais, tplSearch, categoriasById, contasByCategoriaId, fornecedoresById, formasById]);
+
   // --- Actions ---
   function openNewCategoria() {
     setCatMode("NEW");
@@ -310,6 +429,114 @@ const Settings: React.FC<SettingsProps> = ({
       contas: [],
     });
     setCatOpen(true);
+  }
+
+  // -------------------- Templates (Sprint TPL-1) --------------------
+  function openNewTemplate() {
+    setTplMode("NEW");
+    setTplError("");
+    setTplForm({
+      id: newId(),
+      nome: "",
+      favorito: true,
+      codigo_pais: (tplFilterPais === "ALL" ? "PT" : tplFilterPais) as any,
+      tipo: TipoTransacao.DESPESA,
+      categoria_id: "",
+      conta_contabil_id: "",
+      forma_pagamento_id: "",
+      fornecedor_id: undefined,
+      description_default: "",
+      observacao_default: "",
+      valor_default: undefined,
+      ordem: undefined,
+    } as any);
+    setTplOpen(true);
+  }
+
+  function openEditTemplate(tpl: any) {
+    setTplMode("EDIT");
+    setTplError("");
+    setTplForm({
+      ...(tpl as any),
+      id: String(tpl?.id || ""),
+      nome: String(tpl?.nome || ""),
+      favorito: !!tpl?.favorito,
+      codigo_pais: (tpl?.codigo_pais || "PT") as any,
+      tipo: (tpl?.tipo || TipoTransacao.DESPESA) as any,
+      categoria_id: String(tpl?.categoria_id || ""),
+      conta_contabil_id: String(tpl?.conta_contabil_id || ""),
+      forma_pagamento_id: String(tpl?.forma_pagamento_id || ""),
+      fornecedor_id: tpl?.fornecedor_id ? String(tpl?.fornecedor_id) : undefined,
+      description_default: String(tpl?.description_default || ""),
+      observacao_default: String(tpl?.observacao_default || ""),
+      valor_default:
+        tpl?.valor_default === undefined || tpl?.valor_default === null ? undefined : Number(tpl?.valor_default),
+      ordem: tpl?.ordem === undefined || tpl?.ordem === null ? undefined : Number(tpl?.ordem),
+    } as any);
+    setTplOpen(true);
+  }
+
+  async function saveTemplate() {
+    setTplError("");
+    const nome = String((tplForm as any)?.nome || "").trim();
+    const categoriaId = String((tplForm as any)?.categoria_id || "").trim();
+    const itemId = String((tplForm as any)?.conta_contabil_id || "").trim();
+    const fpId = String((tplForm as any)?.forma_pagamento_id || "").trim();
+
+    if (!nome) {
+      setTplError("Nome do template é obrigatório.");
+      return;
+    }
+    if (!categoriaId) {
+      setTplError("Selecione a Categoria.");
+      return;
+    }
+    if (!itemId) {
+      setTplError("Selecione o Item.");
+      return;
+    }
+    if (!fpId) {
+      setTplError("Selecione a Forma de Pagamento.");
+      return;
+    }
+
+    try {
+      await onSaveTxTemplate({
+        ...(tplForm as any),
+        id: String((tplForm as any)?.id || newId()),
+        nome,
+        categoria_id: categoriaId,
+        conta_contabil_id: itemId,
+        forma_pagamento_id: fpId,
+        fornecedor_id: String((tplForm as any)?.fornecedor_id || "").trim() || undefined,
+        description_default: String((tplForm as any)?.description_default || "").trim() || undefined,
+        observacao_default: String((tplForm as any)?.observacao_default || "").trim() || undefined,
+        valor_default:
+          (tplForm as any)?.valor_default === undefined || (tplForm as any)?.valor_default === null ||
+          String((tplForm as any)?.valor_default).trim() === ""
+            ? undefined
+            : Number((tplForm as any)?.valor_default),
+        ordem:
+          (tplForm as any)?.ordem === undefined || (tplForm as any)?.ordem === null ||
+          String((tplForm as any)?.ordem).trim() === ""
+            ? undefined
+            : Number((tplForm as any)?.ordem),
+      } as any);
+      setTplOpen(false);
+    } catch (e: any) {
+      const msg = String(e?.message || e || "");
+      if (msg === "TEMPLATE_NOME_OBRIGATORIO") setTplError("Nome do template é obrigatório.");
+      else if (msg === "TEMPLATE_CATEGORIA_OBRIGATORIA") setTplError("Selecione a Categoria.");
+      else if (msg === "TEMPLATE_ITEM_OBRIGATORIO") setTplError("Selecione o Item.");
+      else if (msg === "TEMPLATE_PAGAMENTO_OBRIGATORIO") setTplError("Selecione a Forma de Pagamento.");
+      else setTplError("Erro ao salvar template. Verifique os campos e tente novamente.");
+    }
+  }
+
+  async function deleteTemplate(id: string) {
+    if (!id) return;
+    if (!confirm("Excluir este template?")) return;
+    await onDeleteTxTemplate(id);
   }
 
 
@@ -695,6 +922,7 @@ const Settings: React.FC<SettingsProps> = ({
           {tabBtn("PAGAMENTO", "Pagamento")}
           {tabBtn("FORNECEDORES", "Fornecedores")}
           {tabBtn("ORCAMENTO", "Orçamento")}
+          {tabBtn("TEMPLATES", "Templates")}
           {tabBtn("INSS", "INSS")}
         </div>
       </div>
@@ -930,6 +1158,123 @@ const Settings: React.FC<SettingsProps> = ({
                   <tr>
                     <td className="py-6 text-gray-500" colSpan={3}>
                       Nenhum fornecedor cadastrado.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TEMPLATES */}
+      {tab === "TEMPLATES" && (
+        <div className="bg-white p-6 rounded-[2rem] border shadow-sm space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-xl font-black text-bb-blue uppercase italic">Templates de Lançamento</h3>
+              <p className="text-[11px] text-gray-500 font-semibold">
+                Cadastre modelos prontos de lançamento (Categoria + Item + Forma de Pagamento + opcional Fornecedor/Descrição/Observação/Valor). No próximo sprint, os
+                favoritos aparecerão em destaque na inclusão de lançamentos.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={openNewTemplate}
+              className="px-4 py-2 rounded-xl bg-bb-blue text-white text-[10px] font-black uppercase shadow-lg"
+            >
+              + Adicionar
+            </button>
+          </div>
+
+          <div className="flex flex-wrap gap-3 items-end">
+            <div className="min-w-[170px]">
+              <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500">País</label>
+              <select
+                className="w-full mt-1 border rounded-xl px-3 py-2 text-[12px]"
+                value={tplFilterPais}
+                onChange={(e) => setTplFilterPais(e.target.value as any)}
+              >
+                <option value="PT">Portugal</option>
+                <option value="BR">Brasil</option>
+                <option value="ALL">Todos</option>
+              </select>
+            </div>
+
+            <div className="flex-1 min-w-[220px]">
+              <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500">Buscar</label>
+              <input
+                className="w-full mt-1 border rounded-xl px-3 py-2 text-[12px]"
+                placeholder="Nome, categoria, item, fornecedor..."
+                value={tplSearch}
+                onChange={(e) => setTplSearch(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="overflow-auto">
+            <table className="w-full text-left text-[12px]">
+              <thead className="text-[10px] uppercase text-gray-500">
+                <tr>
+                  <th className="py-2">Nome</th>
+                  <th className="py-2">Fav</th>
+                  <th className="py-2">País</th>
+                  <th className="py-2">Categoria / Item</th>
+                  <th className="py-2">Pagamento</th>
+                  <th className="py-2">Fornecedor</th>
+                  <th className="py-2">Valor</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {templatesFiltered.map((t: any) => {
+                  const cat = categoriasById.get(String(t?.categoria_id || ""));
+                  const catNome = String((cat as any)?.nome || "-");
+                  const itemNome =
+                    contasByCategoriaId.get(String(t?.categoria_id || ""))?.get(String(t?.conta_contabil_id || "")) || "-";
+                  const fpNome = String((formasById.get(String(t?.forma_pagamento_id || "")) as any)?.nome || "-");
+                  const supNome = String((fornecedoresById.get(String(t?.fornecedor_id || "")) as any)?.nome || "-");
+                  return (
+                    <tr key={String(t?.id || "")} className="border-t">
+                      <td className="py-3 font-semibold">
+                        {String(t?.nome || "")}
+                        {t?.description_default ? (
+                          <div className="text-[10px] text-gray-500 font-semibold">Desc: {String(t?.description_default)}</div>
+                        ) : null}
+                      </td>
+                      <td className="py-3">{t?.favorito ? "★" : ""}</td>
+                      <td className="py-3">{String(t?.codigo_pais || "-")}</td>
+                      <td className="py-3">
+                        <div className="font-semibold">{catNome}</div>
+                        <div className="text-[10px] text-gray-500 font-semibold">{itemNome}</div>
+                      </td>
+                      <td className="py-3">{fpNome}</td>
+                      <td className="py-3">{supNome}</td>
+                      <td className="py-3">{t?.valor_default ? Number(t?.valor_default).toFixed(2) : "-"}</td>
+                      <td className="py-3 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => openEditTemplate(t)}
+                          className="px-3 py-1 rounded-xl bg-gray-50 text-gray-800 text-[10px] font-black uppercase"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteTemplate(String(t?.id || ""))}
+                          className="ml-2 px-3 py-1 rounded-xl bg-red-50 text-red-700 text-[10px] font-black uppercase"
+                        >
+                          Excluir
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {templatesFiltered.length === 0 && (
+                  <tr>
+                    <td className="py-6 text-gray-500" colSpan={8}>
+                      Nenhum template cadastrado para este filtro.
                     </td>
                   </tr>
                 )}
@@ -1399,6 +1744,184 @@ const Settings: React.FC<SettingsProps> = ({
               Cancelar
             </button>
             <button type="button" onClick={saveFornecedor} className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase">
+              Salvar
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* MODAL:Template de Lançamento (Sprint TPL-1) */}
+      <Modal
+        open={tplOpen}
+        title={tplMode === "NEW" ? "Adicionar template" : "Editar template"}
+        onClose={() => setTplOpen(false)}
+      >
+        <div className="space-y-4">
+          {tplError ? (
+            <div className="rounded-2xl border bg-red-50 text-red-700 p-3 text-[11px] font-black">{tplError}</div>
+          ) : null}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="md:col-span-2">
+              <label className="text-[10px] font-black uppercase text-gray-500">Nome do template</label>
+              <input
+                value={String((tplForm as any)?.nome || "")}
+                onChange={(e) => setTplForm((s: any) => ({ ...s, nome: e.target.value }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="Ex.: ViaVerde (Pedágios/Estacionamentos)"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">País</label>
+              <select
+                value={String((tplForm as any)?.codigo_pais || "PT")}
+                onChange={(e) => {
+                  const pais = e.target.value as any;
+                  setTplForm((s: any) => ({ ...s, codigo_pais: pais, categoria_id: "", conta_contabil_id: "", forma_pagamento_id: "", fornecedor_id: undefined }));
+                }}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              >
+                <option value="PT">🇵🇹 PT</option>
+                <option value="BR">🇧🇷 BR</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-[11px] font-black text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={!!(tplForm as any)?.favorito}
+                  onChange={(e) => setTplForm((s: any) => ({ ...s, favorito: e.target.checked }))}
+                />
+                Favorito
+              </label>
+              <div className="ml-auto w-[120px]">
+                <label className="text-[10px] font-black uppercase text-gray-500">Ordem (opcional)</label>
+                <input
+                  type="number"
+                  value={(tplForm as any)?.ordem ?? ""}
+                  onChange={(e) => setTplForm((s: any) => ({ ...s, ordem: e.target.value }))}
+                  className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                  placeholder="1"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Categoria</label>
+              <select
+                value={String((tplForm as any)?.categoria_id || "")}
+                onChange={(e) => {
+                  const categoriaId = e.target.value;
+                  setTplForm((s: any) => ({ ...s, categoria_id: categoriaId, conta_contabil_id: "" }));
+                }}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              >
+                <option value="">Selecione...</option>
+                {tplCategoriasOptions.map((c: any) => (
+                  <option key={c.id} value={c.id}>
+                    {c.nome}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Item</label>
+              <select
+                value={String((tplForm as any)?.conta_contabil_id || "")}
+                onChange={(e) => setTplForm((s: any) => ({ ...s, conta_contabil_id: e.target.value }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                disabled={!String((tplForm as any)?.categoria_id || "").trim()}
+              >
+                <option value="">Selecione...</option>
+                {tplItensOptions.map((it: any) => (
+                  <option key={it.id} value={it.id}>
+                    {it.nome}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Forma de Pagamento</label>
+              <select
+                value={String((tplForm as any)?.forma_pagamento_id || "")}
+                onChange={(e) => setTplForm((s: any) => ({ ...s, forma_pagamento_id: e.target.value }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              >
+                <option value="">Selecione...</option>
+                {tplFormasOptions.map((fp: any) => (
+                  <option key={fp.id} value={fp.id}>
+                    {fp.nome}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Fornecedor (opcional)</label>
+              <select
+                value={String((tplForm as any)?.fornecedor_id || "")}
+                onChange={(e) => setTplForm((s: any) => ({ ...s, fornecedor_id: e.target.value || undefined }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+              >
+                <option value="">(Sem fornecedor)</option>
+                {tplFornecedoresOptions.map((f: any) => (
+                  <option key={f.id} value={f.id}>
+                    {f.nome}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="text-[10px] font-black uppercase text-gray-500">Descrição padrão (opcional)</label>
+              <input
+                value={String((tplForm as any)?.description_default || "")}
+                onChange={(e) => setTplForm((s: any) => ({ ...s, description_default: e.target.value }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="Ex.: combustível / estacionamentos"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <label className="text-[10px] font-black uppercase text-gray-500">Observação padrão (opcional)</label>
+              <input
+                value={String((tplForm as any)?.observacao_default || "")}
+                onChange={(e) => setTplForm((s: any) => ({ ...s, observacao_default: e.target.value }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="Ex.: usar sempre o cartão X"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-black uppercase text-gray-500">Valor padrão (opcional)</label>
+              <input
+                type="number"
+                step="0.01"
+                value={(tplForm as any)?.valor_default ?? ""}
+                onChange={(e) => setTplForm((s: any) => ({ ...s, valor_default: e.target.value }))}
+                className="w-full mt-1 p-3 rounded-xl border bg-gray-50"
+                placeholder="0.00"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-end justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setTplOpen(false)}
+              className="px-4 py-3 rounded-xl bg-gray-100 font-black text-[10px] uppercase"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={saveTemplate}
+              className="px-4 py-3 rounded-xl bg-bb-blue text-white font-black text-[10px] uppercase"
+            >
               Salvar
             </button>
           </div>

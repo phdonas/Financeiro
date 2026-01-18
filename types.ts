@@ -143,6 +143,35 @@ export interface InssYearlyConfig {
   debora: { nit: string; total_parcelas: number; data_aposentadoria: string };
 }
 
+/**
+ * Templates de Lançamento (Configurações) — Sprint TPL-1
+ * Objetivo: cadastrar combinações padrão para pré-preencher a tela de Lançamentos
+ * (implementação de aplicação do template fica para o Sprint TPL-2).
+ */
+export interface TransactionTemplate {
+  id: string;
+  /** Nome amigável do template (ex.: "ViaVerde – Pedágios/Estacionamento") */
+  nome: string;
+  /** Destacar nos favoritos (aparecerá em destaque na tela de Lançamentos no Sprint TPL-2). */
+  favorito: boolean;
+  /** País do lançamento ao aplicar o template. */
+  codigo_pais: "PT" | "BR";
+  /** Tipo do lançamento (tipicamente DESPESA). */
+  tipo: TipoTransacao;
+  categoria_id: string;
+  conta_contabil_id: string;
+  forma_pagamento_id: string;
+  fornecedor_id?: string;
+  /** Descrição/Identificador padrão (opcional — usuário pode sobrescrever). */
+  description_default?: string;
+  /** Observação padrão (opcional). */
+  observacao_default?: string;
+  /** Valor padrão (opcional). */
+  valor_default?: number;
+  /** Ordenação manual dentro do grupo (opcional). */
+  ordem?: number;
+}
+
 export type InvestmentTransactionType = 'BUY' | 'SELL' | 'YIELD' | 'REVALUATION';
 
 export interface InvestmentTransaction {

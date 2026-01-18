@@ -55,6 +55,7 @@ import type {
   InvestmentAsset,
   InssRecord,
   InssYearlyConfig,
+  TransactionTemplate,
 } from "./types";
 import { TipoTransacao } from "./types";
 import { getDefaultBankId as getDefaultBankIdFromRules } from "./lib/financeDefaults";
@@ -323,6 +324,7 @@ const handleAcceptInvite = useCallback(async () => {
   const [ledgerRefreshToken, setLedgerRefreshToken] = useState<number>(0);
   const [receiptsRefreshToken, setReceiptsRefreshToken] = useState<number>(0);
   const [investments, setInvestments] = useState<InvestmentAsset[]>([]);
+  const [txTemplates, setTxTemplates] = useState<TransactionTemplate[]>([]);
   const [exchangeRates, setExchangeRates] = useState<
     Record<"PT" | "BR", number>
   >({ PT: 1, BR: 1 });
@@ -358,6 +360,9 @@ const handleAcceptInvite = useCallback(async () => {
           setInvestments(
             safeJsonParse(localStorage.getItem(lsKey("investments")), [])
           );
+          setTxTemplates(
+            safeJsonParse(localStorage.getItem(lsKey("txTemplates")), [])
+          );
           setInssRecords(
             safeJsonParse(localStorage.getItem(lsKey("inssRecords")), [])
           );
@@ -379,6 +384,7 @@ const handleAcceptInvite = useCallback(async () => {
             transacoesCloud,
             receiptsCloud,
             investmentsCloud,
+            templatesCloud,
           ] = await Promise.all([
             listHouseholdItems<CategoriaContabil>("categorias", householdId),
             listHouseholdItems<FormaPagamento>(
@@ -390,6 +396,7 @@ const handleAcceptInvite = useCallback(async () => {
             listHouseholdItems<Transacao>("transacoes", householdId),
             listHouseholdItems<Receipt>("receipts", householdId),
             listHouseholdItems<InvestmentAsset>("investments", householdId),
+            listHouseholdItems<TransactionTemplate>("txTemplates", householdId),
           ]);
 
           setCategorias(categoriasCloud);
@@ -399,6 +406,7 @@ const handleAcceptInvite = useCallback(async () => {
           setTransacoes(transacoesCloud);
           setReceipts(receiptsCloud);
           setInvestments(investmentsCloud);
+          setTxTemplates(Array.isArray(templatesCloud) ? templatesCloud : []);
 
           // INSS: carregamento isolado (não pode derrubar o carregamento global)
           try {
@@ -430,6 +438,7 @@ const handleAcceptInvite = useCallback(async () => {
         setTransacoes([]);
         setReceipts([]);
         setInvestments([]);
+        setTxTemplates([]);
         setInssConfigs([]);
         setInssRecords([]);
       } finally {
@@ -463,6 +472,9 @@ const handleAcceptInvite = useCallback(async () => {
   useEffect(() => {
     localStorage.setItem(lsKey("investments"), JSON.stringify(investments));
   }, [investments]);
+  useEffect(() => {
+    localStorage.setItem(lsKey("txTemplates"), JSON.stringify(txTemplates));
+  }, [txTemplates]);
   useEffect(() => {
     localStorage.setItem(lsKey("inssRecords"), JSON.stringify(inssRecords));
   }, [inssRecords]);
@@ -931,6 +943,55 @@ const handleAcceptInvite = useCallback(async () => {
     [isCloud, deleteCloud, deleteLocal]
   );
 
+  // -------------------- Templates de Lançamento (Sprint TPL-1) --------------------
+  const onSaveTxTemplate = useCallback(
+    async (tpl: TransactionTemplate) => {
+      const normalized: TransactionTemplate = {
+        ...tpl,
+        id: String((tpl as any)?.id || "").trim() || newId(),
+        nome: String((tpl as any)?.nome || "").trim(),
+        favorito: !!(tpl as any)?.favorito,
+        codigo_pais: ((tpl as any)?.codigo_pais || "PT") as any,
+        tipo: ((tpl as any)?.tipo || TipoTransacao.DESPESA) as any,
+        categoria_id: String((tpl as any)?.categoria_id || "").trim(),
+        conta_contabil_id: String((tpl as any)?.conta_contabil_id || "").trim(),
+        forma_pagamento_id: String((tpl as any)?.forma_pagamento_id || "").trim(),
+        fornecedor_id: String((tpl as any)?.fornecedor_id || "").trim() || undefined,
+        description_default: String((tpl as any)?.description_default || "").trim() || undefined,
+        observacao_default: String((tpl as any)?.observacao_default || "").trim() || undefined,
+        valor_default:
+          (tpl as any)?.valor_default === undefined || (tpl as any)?.valor_default === null
+            ? undefined
+            : Number((tpl as any)?.valor_default),
+        ordem:
+          (tpl as any)?.ordem === undefined || (tpl as any)?.ordem === null
+            ? undefined
+            : Number((tpl as any)?.ordem),
+      };
+
+      if (!normalized.nome) throw new Error("TEMPLATE_NOME_OBRIGATORIO");
+      if (!normalized.categoria_id) throw new Error("TEMPLATE_CATEGORIA_OBRIGATORIA");
+      if (!normalized.conta_contabil_id) throw new Error("TEMPLATE_ITEM_OBRIGATORIO");
+      if (!normalized.forma_pagamento_id) throw new Error("TEMPLATE_PAGAMENTO_OBRIGATORIO");
+
+      if (isCloud) {
+        const saved = await upsertCloud<TransactionTemplate>("txTemplates", normalized);
+        setTxTemplates((prev) => upsertLocal(prev, saved));
+      } else {
+        setTxTemplates((prev) => upsertLocal(prev, normalized));
+      }
+    },
+    [isCloud, upsertCloud, upsertLocal]
+  );
+
+  const onDeleteTxTemplate = useCallback(
+    async (id: string) => {
+      if (isCloud) await deleteCloud("txTemplates", id);
+      setTxTemplates((prev) => deleteLocal(prev, id));
+    },
+    [isCloud, deleteCloud, deleteLocal]
+  );
+
   const onSaveOrcamento = useCallback(
     async (o: Orcamento) => {
       // normaliza e garante unicidade por chave (pais + ano + mes + categoria)
@@ -1336,6 +1397,7 @@ const handleAcceptInvite = useCallback(async () => {
             formasPagamento={formasPagamento}
             fornecedores={fornecedores}
             orcamentos={orcamentos}
+            txTemplates={txTemplates}
             onSaveCategoria={onSaveCategoria}
             onDeleteCategoria={onDeleteCategoria}
             onSaveFormaPagamento={onSaveFormaPagamento}
@@ -1344,6 +1406,8 @@ const handleAcceptInvite = useCallback(async () => {
             onDeleteFornecedor={onDeleteFornecedor}
             onSaveOrcamento={onSaveOrcamento}
             onDeleteOrcamento={onDeleteOrcamento}
+            onSaveTxTemplate={onSaveTxTemplate}
+            onDeleteTxTemplate={onDeleteTxTemplate}
             inssConfigs={inssConfigs}
             onSaveInssConfig={onSaveInssConfig}
             onDeleteInssConfig={onDeleteInssConfig}
