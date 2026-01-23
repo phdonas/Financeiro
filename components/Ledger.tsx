@@ -21,7 +21,7 @@ interface LedgerProps {
   /** Sprint TPL-2: templates de lançamento (configurados em Configurações). */
   txTemplates?: TransactionTemplate[];
   onSave: (t: Transacao) => void | Promise<void>;
-  onDelete: (id: string) => void;
+  onDelete: (id: string) => void | Promise<void>;
   // Sprint 2.8: paginação real via Firestore quando em modo cloud
   isCloud?: boolean;
   householdId?: string;
@@ -427,7 +427,53 @@ useEffect(() => {
 
   const MAX_RECURRENCE_OCCURRENCES = 240;
 
-  const handleSave = async (e: React.FormEvent) => {
+  
+// Cloud UX fix: mantém a lista atualizada sem exigir F5 após editar/excluir.
+// Em cloud mode, o Ledger renderiza a lista baseada em cloudTxs; portanto precisamos
+// aplicar upsert/delete localmente depois das mutações (além do Firestore).
+const upsertCloudTx = useCallback(
+  (tx: Transacao) => {
+    if (!isCloud) return;
+    const id = String((tx as any)?.id || "").trim();
+    if (!id) return;
+    setCloudTxs((prev) => {
+      const arr = Array.isArray(prev) ? prev : [];
+      const idx = arr.findIndex((x: any) => String(x?.id || "") === id);
+      if (idx >= 0) {
+        const copy = arr.slice();
+        copy[idx] = { ...(copy[idx] as any), ...(tx as any) };
+        return copy as any;
+      }
+      return [...arr, tx] as any;
+    });
+  },
+  [isCloud]
+);
+
+const removeCloudTx = useCallback(
+  (idRaw: string) => {
+    if (!isCloud) return;
+    const id = String(idRaw || "").trim();
+    if (!id) return;
+    setCloudTxs((prev) =>
+      (Array.isArray(prev) ? prev : []).filter((t: any) => String(t?.id || "") !== id) as any
+    );
+  },
+  [isCloud]
+);
+
+const handleDeleteTx = useCallback(
+  async (id: string) => {
+    const txId = String(id || "").trim();
+    if (!txId) return;
+    await Promise.resolve(onDelete(txId));
+    // Atualiza imediatamente a lista renderizada em cloud mode
+    removeCloudTx(txId);
+  },
+  [onDelete, removeCloudTx]
+);
+
+const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (saving) return;
 
@@ -1005,7 +1051,7 @@ const handleLoadMore = () => {
                       </button>
                       <button onClick={() => {
                           if (!window.confirm('Confirma excluir este lançamento?')) return;
-                          onDelete(t.id);
+                          handleDeleteTx(t.id);
                         }} className="w-8 h-8 bg-red-50 text-red-500 rounded-lg flex items-center justify-center hover:bg-red-500 hover:text-white border border-red-100">✕</button>
                     </div>
                   </td>
@@ -1022,7 +1068,7 @@ const handleLoadMore = () => {
   <div className="flex items-center gap-2">
     {isCloud && (
       <>
-        <span className="text-xs text-gray-500">Página</span>
+        <span className="text-xs text-gray-500">Por página</span>
         <select
           className="border rounded-lg px-2 py-1 text-xs"
           value={pageSize}
@@ -1037,14 +1083,26 @@ const handleLoadMore = () => {
     {isCloud && cloudError && <span className="text-xs text-red-600">{cloudError}</span>}
   </div>
         <p className="text-xs text-gray-500">
-          Mostrando <span className="font-semibold">{visibleTxs.length}</span> de{' '}
-          <span className="font-semibold">{filteredTxs.length}</span> lançamentos — Página{' '}
-          <span className="font-semibold">{currentPage}</span>
-          {!isCloud && totalPagesLocal ? (
+          {isCloud ? (
             <>
-              {' '}de <span className="font-semibold">{totalPagesLocal}</span>
+              Mostrando <span className="font-semibold">{visibleTxs.length}</span> de{" "}
+              <span className="font-semibold">{(Array.isArray(cloudTxs) ? cloudTxs.length : 0)}</span>{" "}
+              lançamentos carregados — Páginas carregadas{" "}
+              <span className="font-semibold">{currentPage}</span>
             </>
-          ) : null}
+          ) : (
+            <>
+              Mostrando <span className="font-semibold">{visibleTxs.length}</span> de{" "}
+              <span className="font-semibold">{filteredTxs.length}</span> lançamentos — Página{" "}
+              <span className="font-semibold">{currentPage}</span>
+              {totalPagesLocal ? (
+                <>
+                  {" "}
+                  de <span className="font-semibold">{totalPagesLocal}</span>
+                </>
+              ) : null}
+            </>
+          )}
         </p>
 
         {canLoadMore && (
