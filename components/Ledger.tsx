@@ -21,7 +21,7 @@ interface LedgerProps {
   /** Sprint TPL-2: templates de lançamento (configurados em Configurações). */
   txTemplates?: TransactionTemplate[];
   onSave: (t: Transacao) => void | Promise<void>;
-  onDelete: (id: string) => void | Promise<void>;
+  onDelete: (id: string) => void;
   // Sprint 2.8: paginação real via Firestore quando em modo cloud
   isCloud?: boolean;
   householdId?: string;
@@ -81,7 +81,7 @@ const Ledger: React.FC<LedgerProps> = ({
   const [monthFilter, setMonthFilter] = useState<number>(() => new Date().getMonth() + 1);
   const [yearFilter, setYearFilter] = useState<number>(() => new Date().getFullYear());
   const [dateRegime, setDateRegime] = useState<'COMPETENCIA' | 'CAIXA'>('COMPETENCIA');
-  const [sortMode, setSortMode] = useState<'VENCIMENTO' | 'CATEGORIA' | 'DATA'>('VENCIMENTO');
+  const [sortMode, setSortMode] = useState<'VENCIMENTO' | 'CATEGORIA' | 'DATA' | 'PAGAMENTO_ASC' | 'PAGAMENTO_DESC'>('VENCIMENTO');
   // Sprint 2.6: persistência de filtros + paginação incremental (evita travar com listas grandes)
   const PAGE_SIZE = 20;
   const [visibleCount, setVisibleCount] = useState<number>(PAGE_SIZE);
@@ -181,9 +181,16 @@ const fetchCloudPage = useCallback(
         householdId: effectiveHouseholdId,
         viewMode,
         pageSize,
+        categoriaId: catFilter || undefined,
         startDate: periodRange?.startDate,
         endDate: periodRange?.endDate,
-        dateField: dateRegime === 'CAIXA' ? 'data_prevista_pagamento' : 'data_competencia',
+        dateField:
+          sortMode === 'PAGAMENTO_ASC' || sortMode === 'PAGAMENTO_DESC'
+            ? 'data_prevista_pagamento'
+            : dateRegime === 'CAIXA'
+              ? 'data_prevista_pagamento'
+              : 'data_competencia',
+        orderDir: sortMode === 'PAGAMENTO_ASC' ? 'asc' : 'desc',
         cursor,
       });
 
@@ -229,7 +236,7 @@ useEffect(() => {
   setCloudHasMore(true);
   setCloudTxs([]);
   fetchCloudPage({ reset: true, cursor: null });
-}, [isCloud, effectiveHouseholdId, viewMode, monthFilter, yearFilter, pageSize, periodRange, dateRegime, refreshToken]);
+}, [isCloud, effectiveHouseholdId, viewMode, monthFilter, yearFilter, pageSize, periodRange, dateRegime, catFilter, sortMode, refreshToken]);
 
 
   const parseYearMonth = (dateStr?: string) => {
@@ -427,53 +434,7 @@ useEffect(() => {
 
   const MAX_RECURRENCE_OCCURRENCES = 240;
 
-  
-// Cloud UX fix: mantém a lista atualizada sem exigir F5 após editar/excluir.
-// Em cloud mode, o Ledger renderiza a lista baseada em cloudTxs; portanto precisamos
-// aplicar upsert/delete localmente depois das mutações (além do Firestore).
-const upsertCloudTx = useCallback(
-  (tx: Transacao) => {
-    if (!isCloud) return;
-    const id = String((tx as any)?.id || "").trim();
-    if (!id) return;
-    setCloudTxs((prev) => {
-      const arr = Array.isArray(prev) ? prev : [];
-      const idx = arr.findIndex((x: any) => String(x?.id || "") === id);
-      if (idx >= 0) {
-        const copy = arr.slice();
-        copy[idx] = { ...(copy[idx] as any), ...(tx as any) };
-        return copy as any;
-      }
-      return [...arr, tx] as any;
-    });
-  },
-  [isCloud]
-);
-
-const removeCloudTx = useCallback(
-  (idRaw: string) => {
-    if (!isCloud) return;
-    const id = String(idRaw || "").trim();
-    if (!id) return;
-    setCloudTxs((prev) =>
-      (Array.isArray(prev) ? prev : []).filter((t: any) => String(t?.id || "") !== id) as any
-    );
-  },
-  [isCloud]
-);
-
-const handleDeleteTx = useCallback(
-  async (id: string) => {
-    const txId = String(id || "").trim();
-    if (!txId) return;
-    await Promise.resolve(onDelete(txId));
-    // Atualiza imediatamente a lista renderizada em cloud mode
-    removeCloudTx(txId);
-  },
-  [onDelete, removeCloudTx]
-);
-
-const handleSave = async (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (saving) return;
 
@@ -716,12 +677,17 @@ return filtered.sort((a, b) => {
     return db.localeCompare(da);
   }
 
-  // VENCIMENTO
+  // VENCIMENTO / PAGAMENTO
   const da = vencimentoKey(a);
   const db = vencimentoKey(b);
   if (!da && !db) return 0;
   if (!da) return 1;
   if (!db) return -1;
+
+  if (sortMode === 'PAGAMENTO_ASC') {
+    return da.localeCompare(db); // asc
+  }
+  // default: desc (VENCIMENTO ou PAGAMENTO_DESC)
   return db.localeCompare(da);
     });
   }, [isCloud, cloudTxs, transacoes, categorias, viewMode, catFilter, monthFilter, yearFilter, dateRegime, sortMode]);
@@ -798,6 +764,20 @@ const handleLoadMore = () => {
   }
   setVisibleCount((prev) => prev + PAGE_SIZE);
 };
+
+  const handleDeleteTx = async (txId: string) => {
+    if (!txId) return;
+    try {
+      await Promise.resolve(onDelete(txId));
+      // Atualiza imediatamente a lista renderizada em cloud mode (sem F5)
+      if (isCloud) {
+        setCloudTxs((prev) => (Array.isArray(prev) ? prev.filter((t) => t.id !== txId) : []));
+      }
+    } catch (e) {
+      console.error('[Ledger] erro ao excluir lançamento:', e);
+      alert('Não foi possível excluir o lançamento. Verifique o console para detalhes.');
+    }
+  };
 
   // Totais (com regra: Pagamentos > Cartão de Crédito NÃO soma em despesas)
   const computeStats = useCallback(
@@ -927,10 +907,18 @@ const handleLoadMore = () => {
 <select
   className="bg-gray-50 p-3 rounded-xl text-[10px] font-black text-bb-blue uppercase italic tracking-widest border-none outline-none focus:ring-1 focus:ring-bb-blue/20"
   value={sortMode}
-  onChange={(e) => setSortMode(e.target.value as any)}
+  onChange={(e) => {
+    const v = e.target.value as any;
+    setSortMode(v);
+    if (v === 'PAGAMENTO_ASC' || v === 'PAGAMENTO_DESC') {
+      setDateRegime('CAIXA');
+    }
+  }}
   title="Ordenação"
 >
   <option value="VENCIMENTO">Vencimento (desc)</option>
+  <option value="PAGAMENTO_ASC">Pagamento (asc)</option>
+  <option value="PAGAMENTO_DESC">Pagamento (desc)</option>
   <option value="CATEGORIA">Categoria (A–Z)</option>
   <option value="DATA">Data ({dateRegime === 'CAIXA' ? 'Caixa' : 'Competência'})</option>
 </select>
@@ -1068,7 +1056,7 @@ const handleLoadMore = () => {
   <div className="flex items-center gap-2">
     {isCloud && (
       <>
-        <span className="text-xs text-gray-500">Por página</span>
+        <span className="text-xs text-gray-500">Página</span>
         <select
           className="border rounded-lg px-2 py-1 text-xs"
           value={pageSize}
@@ -1083,26 +1071,14 @@ const handleLoadMore = () => {
     {isCloud && cloudError && <span className="text-xs text-red-600">{cloudError}</span>}
   </div>
         <p className="text-xs text-gray-500">
-          {isCloud ? (
+          Mostrando <span className="font-semibold">{visibleTxs.length}</span> de{' '}
+          <span className="font-semibold">{filteredTxs.length}</span> lançamentos — Página{' '}
+          <span className="font-semibold">{currentPage}</span>
+          {!isCloud && totalPagesLocal ? (
             <>
-              Mostrando <span className="font-semibold">{visibleTxs.length}</span> de{" "}
-              <span className="font-semibold">{(Array.isArray(cloudTxs) ? cloudTxs.length : 0)}</span>{" "}
-              lançamentos carregados — Páginas carregadas{" "}
-              <span className="font-semibold">{currentPage}</span>
+              {' '}de <span className="font-semibold">{totalPagesLocal}</span>
             </>
-          ) : (
-            <>
-              Mostrando <span className="font-semibold">{visibleTxs.length}</span> de{" "}
-              <span className="font-semibold">{filteredTxs.length}</span> lançamentos — Página{" "}
-              <span className="font-semibold">{currentPage}</span>
-              {totalPagesLocal ? (
-                <>
-                  {" "}
-                  de <span className="font-semibold">{totalPagesLocal}</span>
-                </>
-              ) : null}
-            </>
-          )}
+          ) : null}
         </p>
 
         {canLoadMore && (
