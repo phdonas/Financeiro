@@ -728,35 +728,48 @@ export async function listTransacoesPage(params: {
   viewMode?: "PT" | "BR" | "GLOBAL";
   pageSize?: number;
   cursor?: TransacoesCursor;
+  // Filtro opcional por categoria (id)
+  categoriaId?: string;
   // Datas em ISO yyyy-mm-dd (mesmo padrão de data_competencia no app)
   startDate?: string; // inclusive
   endDate?: string;   // exclusive
   // Campo de data usado para filtrar/ordenar quando startDate/endDate são informados.
   // Default mantém o comportamento antigo (data_competencia).
   dateField?: "data_competencia" | "data_prevista_pagamento";
+  // Direção da ordenação (default: desc)
+  orderDir?: "asc" | "desc";
 }) {
   const {
     householdId = DEFAULT_HOUSEHOLD_ID,
     viewMode = "GLOBAL",
     pageSize = 20,
     cursor = null,
+    categoriaId,
     startDate,
     endDate,
     dateField = "data_competencia",
+    orderDir = "desc",
   } = params;
 
   const col = collection(db, `${householdPath(householdId)}/transacoes`);
 
   const runQuery = async (opts: {
     includeCountry: boolean;
+    includeCategory: boolean;
     orderField: "data_competencia" | "data_prevista_pagamento";
     rangeField: "data_competencia" | "data_prevista_pagamento";
+    orderDir: "asc" | "desc";
   }) => {
     const constraints: any[] = [];
 
     // Filtro por país (quando não é GLOBAL)
     if (opts.includeCountry && viewMode !== "GLOBAL") {
       constraints.push(where("codigo_pais", "==", viewMode));
+    }
+
+    // Filtro por categoria (opcional)
+    if (opts.includeCategory && categoriaId) {
+      constraints.push(where("categoria_id", "==", categoriaId));
     }
 
     // Filtro por período (opcional)
@@ -768,7 +781,7 @@ export async function listTransacoesPage(params: {
 
     // Ordenação default do Ledger: mais recente → mais antigo
     // Observação: datas são strings ISO, ordenação lexicográfica funciona.
-    constraints.push(orderBy(opts.orderField, "desc"));
+    constraints.push(orderBy(opts.orderField, opts.orderDir));
     constraints.push(orderBy("__name__", "desc"));
 
     if (cursor) constraints.push(startAfter(cursor));
@@ -786,8 +799,10 @@ export async function listTransacoesPage(params: {
   try {
     snap = await runQuery({
       includeCountry: true,
+      includeCategory: true,
       orderField: preferredField,
       rangeField: preferredField,
+      orderDir,
     });
   } catch (e) {
     // Tentativa 2: remove o filtro de país para reduzir necessidade de índice composto.
@@ -795,16 +810,20 @@ export async function listTransacoesPage(params: {
     try {
       snap = await runQuery({
         includeCountry: false,
+        includeCategory: true,
         orderField: preferredField,
         rangeField: preferredField,
+        orderDir,
       });
     } catch (e2) {
       // Tentativa 3 (fallback): volta para o comportamento antigo (data_competencia)
       // para não travar o app por falta de índices.
       snap = await runQuery({
         includeCountry: true,
+        includeCategory: true,
         orderField: "data_competencia",
         rangeField: "data_competencia",
+        orderDir,
       });
     }
   }
@@ -838,6 +857,7 @@ export async function listReceiptsPage(params: {
     viewMode = "GLOBAL",
     pageSize = 20,
     cursor = null,
+    categoriaId,
     startDate,
     endDate,
     fornecedorId,
