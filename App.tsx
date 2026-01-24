@@ -1270,6 +1270,32 @@ const handleAcceptInvite = useCallback(async () => {
   // -------------------- NAV --------------------
   const [activeTab, setActiveTab] = useState("dashboard");
 
+  // -------------------- RESPONSIVE (Mobile Drawer) --------------------
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Fecha drawer sempre que mudar de aba (navegação)
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [activeTab]);
+
+  // Bloqueia scroll do body quando o drawer estiver aberto (iOS/Chrome/Safari)
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [sidebarOpen]);
+
+
   // Guard: aba Admin só pode ser acessada por ADMIN.
   useEffect(() => {
     if (activeTab === "admin" && memberRole !== "ADMIN") {
@@ -1528,12 +1554,38 @@ const handleAcceptInvite = useCallback(async () => {
 
 
   return (
-    <div className="min-h-screen flex bg-gray-50">
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} showAdmin={memberRole === "ADMIN"} />
+    <div className="min-h-screen bg-gray-50 md:flex">
+      {/* Sidebar fixo (desktop) */}
+      <div className="hidden md:block">
+        <Sidebar
+          activeTab={activeTab}
+          setActiveTab={setActiveTab}
+          showAdmin={memberRole === "ADMIN"}
+        />
+      </div>
+
+      {/* Drawer (mobile) */}
+      <Sidebar
+        variant="drawer"
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        showAdmin={memberRole === "ADMIN"}
+      />
 
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="bg-white border-b px-6 py-3 flex items-center justify-between gap-4">
+        <div className="bg-white border-b px-4 md:px-6 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 flex-wrap">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              className="md:hidden inline-flex items-center justify-center rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-black hover:bg-gray-50 transition"
+              aria-label="Abrir menu"
+            >
+              ☰
+            </button>
+
             <span
               className={`text-[10px] font-black px-3 py-1 rounded-full tracking-widest ${
                 storageMode === "cloud"
@@ -1554,20 +1606,17 @@ const handleAcceptInvite = useCallback(async () => {
                   key={m}
                   onClick={() => setViewMode(m)}
                   className={`px-3 py-1 rounded-full text-[11px] font-bold ${
-                    viewMode === m
-                      ? "bg-white shadow"
-                      : "text-gray-600 hover:text-gray-800"
+                    viewMode === m ? "bg-white shadow" : "text-gray-600 hover:text-gray-800"
                   }`}
                 >
                   {m}
                 </button>
               ))}
             </div>
-
           </div>
 
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-700 truncate max-w-[280px]">
+          <div className="flex items-center gap-3 md:gap-4">
+            <span className="text-sm text-gray-700 truncate max-w-[140px] md:max-w-[280px]">
               {user.email}
             </span>
             <button
@@ -1580,14 +1629,12 @@ const handleAcceptInvite = useCallback(async () => {
         </div>
 
         <div className="flex-1 min-h-0 overflow-auto">
-          <div className="px-6 py-6">
-            <h1 className="text-2xl font-black mb-4">{contentTitle}</h1>
+          <div className="px-4 md:px-6 py-4 md:py-6">
+            <h1 className="text-xl md:text-2xl font-black mb-4">{contentTitle}</h1>
             {loadingData ? (
               <div className="text-sm text-gray-600">Carregando dados…</div>
             ) : (
-              <ErrorBoundary>
-                {renderContent()}
-              </ErrorBoundary>
+              <ErrorBoundary>{renderContent()}</ErrorBoundary>
             )}
           </div>
         </div>
